@@ -509,12 +509,12 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 		Images:    inv.Images,
 		Workspace: cwd,
 		Extra:     extra,
-		Approve: func(ctx context.Context, name, detail string) (agent.Verdict, error) {
+		Approve: func(ctx context.Context, name, detail string) (agent.Verdict, string, error) {
 			if approve != nil {
 				return approve(ctx, name, detail)
 			}
 			fmt.Fprintf(errOut, "Allow %s? %s\n", name, detail)
-			return agent.Deny, nil
+			return agent.Deny, "", nil
 		},
 		Grants: grants,
 	}
@@ -709,32 +709,25 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 	}
 	tr.SetBusy(true)
 	defer tr.SetBusy(false)
-	approve := func(ctx context.Context, name, detail string) (agent.Verdict, error) {
+	approve := func(ctx context.Context, name, detail string) (agent.Verdict, string, error) {
 		if err := ctx.Err(); err != nil {
-			return agent.Deny, err
+			return agent.Deny, "", err
 		}
 		if err := tr.Permission(name, detail); err != nil {
-			return agent.Deny, err
+			return agent.Deny, "", err
 		}
-		buf := make([]byte, 32)
-		for {
-			n, err := os.Stdin.Read(buf)
-			if err != nil {
-				return agent.Deny, err
-			}
-			for _, b := range buf[:n] {
-				switch b {
-				case '1', 'y', 'Y':
-					_ = tr.ClearPermission()
-					return agent.Once, nil
-				case '2':
-					_ = tr.ClearPermission()
-					return agent.Always, nil
-				case '3', 'n', 'N', 3, 0x1b:
-					_ = tr.ClearPermission()
-					return agent.Deny, nil
-				}
-			}
+		choice, note, err := tui.DecidePermission(os.Stdin, tr.SetPermission)
+		_ = tr.ClearPermission()
+		if err != nil {
+			return agent.Deny, note, err
+		}
+		switch choice {
+		case 0:
+			return agent.Once, note, nil
+		case 1:
+			return agent.Always, note, nil
+		default:
+			return agent.Deny, note, nil
 		}
 	}
 	_, err := execute(context.Background(), next, settings, home, cwd, line, errOut, true, approve, func(ev agent.Event) {

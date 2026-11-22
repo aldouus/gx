@@ -175,9 +175,9 @@ func TestAskDeniesShell(t *testing.T) {
 		Mode:     perm.Ask,
 		Model:    "test",
 		Session:  s,
-		Approve: func(context.Context, string, string) (Verdict, error) {
+		Approve: func(context.Context, string, string) (Verdict, string, error) {
 			prompted = true
-			return Deny, nil
+			return Deny, "try read_file", nil
 		},
 	}
 	if _, err := r.Turn(context.Background(), "run it", nil); err != nil {
@@ -185,6 +185,15 @@ func TestAskDeniesShell(t *testing.T) {
 	}
 	if !prompted {
 		t.Fatal("ask mode did not prompt")
+	}
+	var saw bool
+	for _, m := range s.History() {
+		if strings.Contains(m.Text, "try read_file") {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatal("deny note was not given to the model")
 	}
 }
 
@@ -249,7 +258,7 @@ func TestAutoReviewsShell(t *testing.T) {
 			reviewed = true
 			return false, "hold", nil
 		},
-		Approve: func(context.Context, string, string) (Verdict, error) { return Deny, nil },
+		Approve: func(context.Context, string, string) (Verdict, string, error) { return Deny, "", nil },
 	}
 	if _, err := r.Turn(context.Background(), "x", nil); err != nil {
 		t.Fatal(err)
@@ -282,9 +291,9 @@ func TestAllowAlwaysSkipsTheNextPrompt(t *testing.T) {
 		Model:    "test",
 		Session:  s,
 		Grants:   &Grants{},
-		Approve: func(context.Context, string, string) (Verdict, error) {
+		Approve: func(context.Context, string, string) (Verdict, string, error) {
 			prompts++
-			return Always, nil
+			return Always, "", nil
 		},
 	}
 	if _, err := r.Turn(context.Background(), "first", nil); err != nil {

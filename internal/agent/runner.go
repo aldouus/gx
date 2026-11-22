@@ -35,9 +35,10 @@ const (
 	Always Verdict = "always"
 )
 
-// Approval asks the person. Deny refuses the call. Always remembers it for
-// the rest of the process, for the same tool and target.
-type Approval func(ctx context.Context, name, detail string) (Verdict, error)
+// Approval asks the person. The string is a note sent back with the decision.
+// Deny refuses the call. Always remembers it for the rest of the process,
+// for the same tool and target.
+type Approval func(ctx context.Context, name, detail string) (Verdict, string, error)
 
 // Reviewer is the auto-mode check. allow true runs the call. allow false
 // holds it for Approval.
@@ -207,15 +208,17 @@ func (r *Runner) runTools(ctx context.Context, calls []provider.ToolCall, emit f
 		err  error
 	}
 	allowed := make([]bool, len(calls))
+	notes := make([]string, len(calls))
 	for i, call := range calls {
 		if err := r.Session.ToolCall(call.ID, call.Name, call.Args); err != nil {
 			return err
 		}
-		ok, err := r.allow(ctx, call, emit)
+		ok, note, err := r.allow(ctx, call, emit)
 		if err != nil {
 			return err
 		}
 		allowed[i] = ok
+		notes[i] = note
 		if emit != nil {
 			emit(Event{Kind: "tool_start", Name: call.Name, Detail: call.Args})
 		}
@@ -226,7 +229,11 @@ func (r *Runner) runTools(ctx context.Context, calls []provider.ToolCall, emit f
 	errOnce := error(nil)
 	for i, call := range calls {
 		if !allowed[i] {
-			results[i] = result{call: call, text: "permission denied"}
+			text := "permission denied"
+			if notes[i] != "" {
+				text += "\n" + notes[i]
+			}
+			results[i] = result{call: call, text: text}
 			continue
 		}
 		wg.Add(1)
@@ -239,6 +246,12 @@ func (r *Runner) runTools(ctx context.Context, calls []provider.ToolCall, emit f
 				text = "unknown tool " + call.Name
 			} else {
 				text, err = t.Run(ctx, json.RawMessage(call.Args))
+			}
+			if notes[i] != "" {
+				if text != "" && !strings.HasSuffix(text, "\n") {
+					text += "\n"
+				}
+				text += notes[i]
 			}
 			mu.Lock()
 			defer mu.Unlock()
@@ -266,10 +279,10 @@ func (r *Runner) runTools(ctx context.Context, calls []provider.ToolCall, emit f
 	return nil
 }
 
-func (r *Runner) allow(ctx context.Context, call provider.ToolCall, emit func(Event)) (bool, error) {
+func (r *Runner) allow(ctx context.Context, call provider.ToolCall, emit func(Event)) (bool, string, error) {
 	target := grantTarget(call)
 	if r.Grants != nil && r.Grants.Allows(call.Name, target) {
-		return true, nil
+		return true, "", nil
 	}
 	t, ok := r.Tools.Get(call.Name)
 	spec := perm.Spec{Name: call.Name, ShellCommand: shellCommand(call)}
@@ -282,15 +295,15 @@ func (r *Runner) allow(ctx context.Context, call provider.ToolCall, emit func(Ev
 	spec.Routine = perm.Routine(spec)
 	switch perm.Decide(r.Mode, spec) {
 	case perm.Allow:
-		return true, nil
+		return true, "", nil
 	case perm.Review:
 		if r.Review != nil {
 			allow, _, err := r.Review(ctx, call.Name, call.Args)
 			if err != nil {
-				return false, err
+				return false, "", err
 			}
 			if allow {
-				return true, nil
+				return true, "", nil
 			}
 		}
 		fallthrough
@@ -299,18 +312,18 @@ func (r *Runner) allow(ctx context.Context, call provider.ToolCall, emit func(Ev
 			emit(Event{Kind: "permission", Name: call.Name, Detail: call.Args})
 		}
 		if r.Approve == nil {
-			return false, nil
+			return false, "", nil
 		}
-		verdict, err := r.Approve(ctx, call.Name, call.Args)
+		verdict, note, err := r.Approve(ctx, call.Name, call.Args)
 		if err != nil {
-			return false, err
+			return false, "", err
 		}
 		if verdict == Always && r.Grants != nil {
 			r.Grants.Add(call.Name, target)
 		}
-		return verdict == Once || verdict == Always, nil
+		return verdict == Once || verdict == Always, note, nil
 	default:
-		return false, nil
+		return false, "", nil
 	}
 }
 

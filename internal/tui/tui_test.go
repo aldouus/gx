@@ -131,6 +131,21 @@ func TestDetailShowsToolOutput(t *testing.T) {
 	}
 }
 
+func TestPermissionNote(t *testing.T) {
+	choice, note, err := DecidePermission(strings.NewReader("2keep the test\n"), nil)
+	if err != nil || choice != 1 || note != "keep the test" {
+		t.Fatalf("choice %d note %q err %v", choice, note, err)
+	}
+	choice, note, err = DecidePermission(strings.NewReader("nope"), nil)
+	if err != nil || choice != 2 || note != "" {
+		t.Fatalf("deny choice %d note %q err %v", choice, note, err)
+	}
+	choice, note, err = DecidePermission(strings.NewReader("2use file 2\n"), nil)
+	if err != nil || choice != 1 || note != "use file 2" {
+		t.Fatalf("noted choice %d note %q err %v", choice, note, err)
+	}
+}
+
 func strip(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {

@@ -38,10 +38,12 @@ type Transcript struct {
 	input  string
 	cursor int
 
-	live    string
-	archive []string
-	tools   []ToolLine
-	ask     *ToolLine
+	live      string
+	archive   []string
+	tools     []ToolLine
+	ask       *ToolLine
+	askChoice int
+	askNote   string
 }
 
 func NewTranscript(out interface{ Write([]byte) (int, error) }, cols int) *Transcript {
@@ -180,15 +182,35 @@ func (t *Transcript) ToolDone(name, output string) error {
 	return t.Paint()
 }
 
-// Permission shows an approval prompt.
+// Permission shows an approval prompt. Choice 0 is allow once.
 func (t *Transcript) Permission(name, detail string) error {
 	t.ask = &ToolLine{Name: name, Detail: detail}
+	t.askChoice = 0
+	t.askNote = ""
+	return t.Paint()
+}
+
+// SetPermission updates the selected choice and the note while the prompt is open.
+func (t *Transcript) SetPermission(choice int, note string) error {
+	if t.ask == nil {
+		return nil
+	}
+	if choice < 0 {
+		choice = 0
+	}
+	if choice > 2 {
+		choice = 2
+	}
+	t.askChoice = choice
+	t.askNote = note
 	return t.Paint()
 }
 
 // ClearPermission removes the approval prompt.
 func (t *Transcript) ClearPermission() error {
 	t.ask = nil
+	t.askChoice = 0
+	t.askNote = ""
 	return t.Paint()
 }
 
@@ -228,9 +250,19 @@ func (t *Transcript) frame() Frame {
 	if t.ask != nil {
 		rows = append(rows, bold+"Allow "+t.ask.Name+"?"+reset)
 		rows = append(rows, "  "+width.Clip(oneLine(t.ask.Detail), t.cols-2))
-		rows = append(rows, dim+"  1. Allow once"+reset)
-		rows = append(rows, dim+"  2. Allow always"+reset)
-		rows = append(rows, dim+"  3. Deny"+reset)
+		labels := []string{"1. Allow once", "2. Allow always", "3. Deny"}
+		for i, label := range labels {
+			if i == t.askChoice {
+				rows = append(rows, bold+"  "+label+reset)
+			} else {
+				rows = append(rows, dim+"  "+label+reset)
+			}
+		}
+		if t.askNote != "" {
+			rows = append(rows, "  "+width.Clip(t.askNote, t.cols-2))
+		} else {
+			rows = append(rows, dim+"  enter confirms · type a note"+reset)
+		}
 	}
 	rows = append(rows, divC+strings.Repeat("─", t.cols)+reset)
 	inputRow := len(rows)
