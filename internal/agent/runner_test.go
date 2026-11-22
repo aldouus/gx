@@ -14,6 +14,7 @@ import (
 
 type script struct {
 	steps [][]provider.Delta
+	seen  []provider.Request
 	n     int
 }
 
@@ -21,6 +22,7 @@ func (s *script) Stream(ctx context.Context, req provider.Request) (<-chan provi
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	s.seen = append(s.seen, req)
 	ch := make(chan provider.Delta)
 	var step []provider.Delta
 	if s.n < len(s.steps) {
@@ -93,6 +95,63 @@ func TestTurnToolThenText(t *testing.T) {
 	if !found {
 		t.Fatal("turn was not committed")
 	}
+}
+
+type reportTool struct{ box *Mailbox }
+
+func (reportTool) Name() string        { return "subagent" }
+func (reportTool) Description() string { return "child" }
+func (reportTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (reportTool) ReadOnly() bool      { return false }
+func (reportTool) NeedsApproval() bool { return false }
+func (t reportTool) Run(_ context.Context, _ json.RawMessage) (string, error) {
+	t.box.Start("child-1")
+	t.box.Finish("child-1", "report body")
+	return "subagent child-1 started", nil
+}
+
+func TestReportJoinsTheOpenTurn(t *testing.T) {
+	root := t.TempDir()
+	s, err := session.Create(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	box := &Mailbox{}
+	reg := tool.NewRegistry(reportTool{box: box})
+	prov := &script{steps: [][]provider.Delta{
+		{{Call: &provider.CallDelta{Index: 0, ID: "c1", Name: "subagent", Args: `{"message":"go"}`}}, {Done: true}},
+		{{Text: "saw the report"}, {Done: true}},
+	}}
+	r := &Runner{
+		Provider: prov,
+		Tools:    reg,
+		Mode:     perm.FullAccess,
+		Model:    "test",
+		Session:  s,
+		Inbox:    box,
+	}
+	out, err := r.Turn(context.Background(), "delegate", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "saw the report" {
+		t.Fatalf("out %q", out)
+	}
+	if len(prov.seen) < 2 || !strings.Contains(requestText(prov.seen[1]), "report body") {
+		t.Fatalf("second request did not see the report: %#v", prov.seen)
+	}
+}
+
+func requestText(req provider.Request) string {
+	var b strings.Builder
+	for _, m := range req.Messages {
+		b.WriteString(m.Text)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func TestAskDeniesShell(t *testing.T) {

@@ -42,6 +42,7 @@ type Runner struct {
 	Session   *session.Session
 	Approve   Approval
 	Review    Reviewer
+	Inbox     *Mailbox
 	Workspace string
 	Extra     string
 	CompactAt int
@@ -58,6 +59,9 @@ func (r *Runner) Turn(ctx context.Context, prompt string, emit func(Event)) (str
 		r.CompactAt = 120_000
 	}
 	ctx = tool.WithDepth(ctx, r.Depth)
+	if notes := r.Inbox.Take(); len(notes) > 0 {
+		prompt = strings.Join(notes, "\n\n") + "\n\n" + prompt
+	}
 	if _, err := r.Session.User(prompt); err != nil {
 		return "", err
 	}
@@ -71,6 +75,7 @@ func (r *Runner) Turn(ctx context.Context, prompt string, emit func(Event)) (str
 			_ = r.Session.Interrupt()
 			return final, err
 		}
+		_ = r.pull()
 		text, calls, err := r.complete(ctx, emit)
 		if err != nil {
 			_ = r.Session.Interrupt()
@@ -78,6 +83,9 @@ func (r *Runner) Turn(ctx context.Context, prompt string, emit func(Event)) (str
 		}
 		final = text
 		if len(calls) == 0 {
+			if r.pull() {
+				continue
+			}
 			if err := r.Session.Commit(); err != nil {
 				return final, err
 			}
@@ -90,6 +98,38 @@ func (r *Runner) Turn(ctx context.Context, prompt string, emit func(Event)) (str
 	}
 	_ = r.Session.Interrupt()
 	return final, fmt.Errorf("agent stopped after %d rounds", r.MaxRounds)
+}
+
+func (r *Runner) pull() bool {
+	if r.Inbox == nil {
+		return false
+	}
+	notes := r.Inbox.Take()
+	if len(notes) == 0 {
+		return false
+	}
+	for _, n := range notes {
+		if err := r.Session.Steer(n); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// CompactNow summarizes the current history even when it is under the size threshold.
+func (r *Runner) CompactNow(ctx context.Context, emit func(Event)) error {
+	n := 0
+	for _, m := range r.Session.History() {
+		n += len(m.Text)
+	}
+	if n == 0 {
+		return fmt.Errorf("nothing to compact")
+	}
+	saved := r.CompactAt
+	r.CompactAt = 1
+	err := r.maybeCompact(ctx, emit)
+	r.CompactAt = saved
+	return err
 }
 
 func (r *Runner) complete(ctx context.Context, emit func(Event)) (string, []provider.ToolCall, error) {
