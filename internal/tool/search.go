@@ -67,15 +67,23 @@ func (t grepFiles) Run(_ context.Context, args json.RawMessage) (string, error) 
 	}
 	var hits []string
 	skipped := 0
+	ig := newIgnorer()
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
+		if err != nil || d == nil {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
 			return nil
 		}
 		if d.IsDir() {
-			base := d.Name()
-			if base == ".git" || base == "node_modules" || base == "vendor" {
+			if skipSearchDir(ig, rel, d.Name()) {
 				return filepath.SkipDir
 			}
+			ig.observe(path, rel)
+			return nil
+		}
+		if ig.ignored(rel, false) {
 			return nil
 		}
 		if in.Include != "" {
@@ -188,15 +196,23 @@ func (t globFiles) Run(_ context.Context, args json.RawMessage) (string, error) 
 		}
 	}
 	var matches []string
+	ig := newIgnorer()
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			if d != nil && d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules") {
-				return filepath.SkipDir
-			}
+		if err != nil || d == nil {
 			return nil
 		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if skipSearchDir(ig, rel, d.Name()) {
+				return filepath.SkipDir
+			}
+			ig.observe(path, rel)
+			return nil
+		}
+		if ig.ignored(rel, false) {
 			return nil
 		}
 		if matchGlob(in.Pattern, rel) {
@@ -238,4 +254,11 @@ func matchGlob(pattern, rel string) bool {
 	}
 	ok, _ = filepath.Match(pattern, filepath.Base(rel))
 	return ok
+}
+
+func skipSearchDir(ig *ignorer, rel, name string) bool {
+	if rel != "." && (name == ".git" || name == "node_modules" || name == "vendor") {
+		return true
+	}
+	return ig.ignored(rel, true)
 }
