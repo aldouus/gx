@@ -38,41 +38,70 @@ func (t skillTool) Run(_ context.Context, args json.RawMessage) (string, error) 
 	return "", fmt.Errorf("skill %q not found", in.Name)
 }
 
-// Spawn runs a child agent. The parent keeps working on other tool calls.
-type Spawn func(ctx context.Context, message string, depth int) (string, error)
+// Agents is the subagent tool's view of the children it started.
+type Agents interface {
+	Message(ctx context.Context, message string, depth int) (string, error)
+	Wait(ctx context.Context, name string) (string, error)
+	Status(name string) string
+	Stop(name string) string
+	Close(name string) string
+}
 
-type delegate struct{ spawn Spawn }
+type delegate struct{ agents Agents }
 
 // Subagent is the subagent tool. Nesting stops at depth two.
-func Subagent(spawn Spawn) Tool { return delegate{spawn: spawn} }
+func Subagent(agents Agents) Tool { return delegate{agents: agents} }
 
 func (delegate) Name() string { return "subagent" }
 func (delegate) Description() string {
-	return "Delegate a task to a subagent. It reports when its work ends. A subagent's subagent may run; further nesting stops."
+	return "Start a subagent, wait for its report, or stop it. action is message, wait, status, stop, or close. message starts one and returns at once. wait blocks until a report. stop ends a running turn. close stops it and drops it."
 }
 func (delegate) ReadOnly() bool      { return false }
 func (delegate) NeedsApproval() bool { return false }
 func (delegate) Schema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"action":{"type":"string","enum":["message"]},"message":{"type":"string"},"agent":{"type":"string"}},"required":["message"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"action":{"type":"string","enum":["message","wait","status","stop","close"]},"message":{"type":"string"},"agent":{"type":"string"}},"additionalProperties":false}`)
 }
 
 func (d delegate) Run(ctx context.Context, args json.RawMessage) (string, error) {
 	var in struct {
 		Action  string `json:"action"`
 		Message string `json:"message"`
+		Agent   string `json:"agent"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
 		return "", err
 	}
-	if in.Action != "" && in.Action != "message" {
-		return "", fmt.Errorf("subagent action %q is not supported", in.Action)
+	if in.Action == "" {
+		in.Action = "message"
 	}
-	depth := Depth(ctx)
-	if depth >= 2 {
-		return "", fmt.Errorf("nesting stops at two")
-	}
-	if d.spawn == nil {
+	if d.agents == nil {
 		return "", fmt.Errorf("subagent is unavailable")
 	}
-	return d.spawn(ctx, in.Message, depth)
+	switch in.Action {
+	case "message":
+		if in.Message == "" {
+			return "", fmt.Errorf("subagent message is required")
+		}
+		depth := Depth(ctx)
+		if depth >= 2 {
+			return "", fmt.Errorf("nesting stops at two")
+		}
+		return d.agents.Message(ctx, in.Message, depth)
+	case "wait":
+		return d.agents.Wait(ctx, in.Agent)
+	case "status":
+		return d.agents.Status(in.Agent), nil
+	case "stop":
+		if in.Agent == "" {
+			return "", fmt.Errorf("subagent stop needs an agent name")
+		}
+		return d.agents.Stop(in.Agent), nil
+	case "close":
+		if in.Agent == "" {
+			return "", fmt.Errorf("subagent close needs an agent name")
+		}
+		return d.agents.Close(in.Agent), nil
+	default:
+		return "", fmt.Errorf("subagent action %q is not supported", in.Action)
+	}
 }

@@ -351,6 +351,59 @@ func runAsk(ctx context.Context, inv cli.Invocation, settings config.File, home,
 	return 0
 }
 
+type subagents struct {
+	home, cwd string
+	inbox     *agent.Mailbox
+	parent    *agent.Runner
+	n         atomic.Int64
+}
+
+func (s *subagents) Message(ctx context.Context, message string, depth int) (string, error) {
+	name := fmt.Sprintf("child-%d", s.n.Add(1))
+	child, err := session.Create(s.home, s.cwd)
+	if err != nil {
+		return "", err
+	}
+	childCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	s.inbox.Start(name, cancel)
+	childRunner := *s.parent
+	childRunner.Session = child
+	childRunner.Depth = depth + 1
+	childRunner.Inbox = s.inbox
+	mgr := subagent.Manager{Run: func(ctx context.Context, req subagent.Request, emit func(string)) (string, error) {
+		defer child.Close()
+		return childRunner.Turn(ctx, req.Message, nil)
+	}}
+	ch, err := mgr.Start(childCtx, subagent.Request{Name: name, Message: message, Depth: depth, Report: "final"})
+	if err != nil {
+		cancel()
+		_ = child.Close()
+		s.inbox.Finish(name, err.Error())
+		return "", err
+	}
+	go func() {
+		rep, ok := <-ch
+		if !ok {
+			s.inbox.Finish(name, "closed")
+			return
+		}
+		text := rep.Text
+		if rep.Err != nil && text == "" {
+			text = rep.Err.Error()
+		}
+		s.inbox.Finish(name, text)
+	}()
+	return "subagent " + name + " started", nil
+}
+
+func (s *subagents) Wait(ctx context.Context, name string) (string, error) {
+	return s.inbox.WaitReport(ctx, name)
+}
+
+func (s *subagents) Status(name string) string { return s.inbox.Status(name) }
+func (s *subagents) Stop(name string) string   { return s.inbox.Stop(name) }
+func (s *subagents) Close(name string) string  { return s.inbox.Close(name) }
+
 func execute(ctx context.Context, inv cli.Invocation, settings config.File, home, cwd, prompt string, errOut io.Writer, remember bool, approve agent.Approval, on func(agent.Event), inbox *agent.Mailbox, grants *agent.Grants) (string, error) {
 	model, origin, err := resolveModel(inv, settings)
 	if err != nil {
@@ -465,42 +518,7 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 		},
 		Grants: grants,
 	}
-	var childN atomic.Int64
-	reg.Add(tool.Subagent(func(ctx context.Context, message string, depth int) (string, error) {
-		name := fmt.Sprintf("child-%d", childN.Add(1))
-		child, err := session.Create(home, cwd)
-		if err != nil {
-			return "", err
-		}
-		inbox.Start(name)
-		childRunner := *r
-		childRunner.Session = child
-		childRunner.Depth = depth + 1
-		childRunner.Inbox = inbox
-		mgr := subagent.Manager{Run: func(ctx context.Context, req subagent.Request, emit func(string)) (string, error) {
-			defer child.Close()
-			return childRunner.Turn(ctx, req.Message, nil)
-		}}
-		ch, err := mgr.Start(context.WithoutCancel(ctx), subagent.Request{Name: name, Message: message, Depth: depth, Report: "final"})
-		if err != nil {
-			_ = child.Close()
-			inbox.Finish(name, err.Error())
-			return "", err
-		}
-		go func() {
-			rep, ok := <-ch
-			if !ok {
-				inbox.Finish(name, "closed")
-				return
-			}
-			text := rep.Text
-			if rep.Err != nil && text == "" {
-				text = rep.Err.Error()
-			}
-			inbox.Finish(name, text)
-		}()
-		return "subagent " + name + " started", nil
-	}))
+	reg.Add(tool.Subagent(&subagents{home: home, cwd: cwd, inbox: inbox, parent: r}))
 	sessions := attachMCP(ctx, reg, settings.MCPServers, errOut)
 	defer closeMCP(sessions)
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)

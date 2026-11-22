@@ -107,7 +107,7 @@ func (reportTool) Schema() json.RawMessage {
 func (reportTool) ReadOnly() bool      { return false }
 func (reportTool) NeedsApproval() bool { return false }
 func (t reportTool) Run(_ context.Context, _ json.RawMessage) (string, error) {
-	t.box.Start("child-1")
+	t.box.Start("child-1", nil)
 	t.box.Finish("child-1", "report body")
 	return "subagent child-1 started", nil
 }
