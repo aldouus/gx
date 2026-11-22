@@ -4,6 +4,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,6 +27,8 @@ import (
 	"gx/internal/tool"
 	"gx/internal/tui"
 )
+
+var errQuit = errors.New("quit")
 
 // Run executes one fx invocation. args do not include argv0.
 func Run(args []string, in io.Reader, out, errOut io.Writer) int {
@@ -591,7 +594,11 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 		tr.SetCtrlC(comp.Armed)
 		tr.SetInput(comp.Line, comp.Pos)
 		if act.Submit != "" {
-			if err := handleSubmit(inv, settings, home, cwd, tr, errOut, act.Submit, &continued, inbox, grants); err != nil {
+			err := handleSubmit(inv, settings, home, cwd, tr, errOut, act.Submit, &continued, inbox, grants)
+			if err == errQuit {
+				return 0
+			}
+			if err != nil {
 				_ = tr.FinishText()
 			}
 			tr.SetInput("", 0)
@@ -631,9 +638,17 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 				tr.SetStatus(rest, settings.PermissionMode, signedIn(home))
 			}
 			return tr.User("model " + settings.Model)
-		case "clear":
+		case "clear", "new", "reset":
 			*continued = false
 			return tr.User("cleared")
+		case "status":
+			return tr.User(statusLine(inv, settings, cwd))
+		case "allowlist":
+			return tr.User(allowlistText(grants))
+		case "version":
+			return tr.User("fx " + cli.Version)
+		case "quit", "exit":
+			return errQuit
 		case "skills":
 			return tr.User(skillList(cwd, home))
 		case "mcp":
@@ -836,6 +851,30 @@ func agentList(inbox *agent.Mailbox) string {
 			state = "done"
 		}
 		fmt.Fprintf(&b, "%s  %s\n", k.Name, state)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func statusLine(inv cli.Invocation, settings config.File, cwd string) string {
+	model, _, _ := resolveModel(inv, settings)
+	mode := settings.PermissionMode
+	if inv.Permission != "" {
+		mode = inv.Permission
+	}
+	if mode == "" {
+		mode = string(perm.Default)
+	}
+	return "model " + model + "\npermission " + mode + "\nworkspace " + cwd
+}
+
+func allowlistText(grants *agent.Grants) string {
+	list := grants.List()
+	if len(list) == 0 {
+		return "allowlist is empty"
+	}
+	var b strings.Builder
+	for _, g := range list {
+		fmt.Fprintf(&b, "%s  %s\n", g.Tool, g.Target)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

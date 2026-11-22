@@ -61,6 +61,14 @@ func TestSlashTable(t *testing.T) {
 	if _, _, ok := MatchSlash("/nope"); ok {
 		t.Fatal("unknown slash matched")
 	}
+	name, _, ok = MatchSlash("/quit")
+	if !ok || name != "quit" {
+		t.Fatal("quit missing")
+	}
+	name, _, ok = MatchSlash("/new")
+	if !ok || name != "new" {
+		t.Fatal("new missing")
+	}
 }
 
 func contains(s, sub string) bool {

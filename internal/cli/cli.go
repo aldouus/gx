@@ -273,10 +273,17 @@ var SlashCommands = []Slash{
 	{"permissions", "Show or set ask, auto, or full-access"},
 	{"compact", "Compact the conversation"},
 	{"resume", "Resume a session"},
-	{"clear", "Clear the composer"},
+	{"clear", "Start a fresh conversation"},
+	{"new", "Start a fresh session"},
+	{"reset", "Reset the current session"},
 	{"skills", "List discovered skills"},
 	{"mcp", "List MCP servers"},
 	{"agents", "List subagents"},
+	{"status", "Show the model, permission mode, and workspace"},
+	{"allowlist", "List commands allowed for this session"},
+	{"version", "Show the fx version"},
+	{"quit", "Exit"},
+	{"exit", "Exit"},
 }
 
 // MatchSlash returns the command name and the rest of the line.
