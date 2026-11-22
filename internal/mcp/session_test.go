@@ -368,7 +368,6 @@ func TestHTTPSession(t *testing.T) {
 		mu      sync.Mutex
 		deleted atomic.Bool
 		bodies  []string
-		headers []http.Header
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
@@ -383,8 +382,6 @@ func TestHTTPSession(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
 		bodies = append(bodies, string(body))
-		headers = append(headers, r.Header.Clone())
-		n := len(bodies)
 		mu.Unlock()
 		switch {
 		case bytes.Contains(body, []byte(`"initialize"`)):
@@ -416,7 +413,6 @@ func TestHTTPSession(t *testing.T) {
 		default:
 			http.Error(w, "unexpected "+string(body), http.StatusBadRequest)
 		}
-		_ = n
 	}))
 	defer srv.Close()
 
