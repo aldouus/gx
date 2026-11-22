@@ -42,6 +42,31 @@ func TestCommitSurvivesClose(t *testing.T) {
 	}
 }
 
+func TestSteerStaysOnTheOpenTurn(t *testing.T) {
+	root := t.TempDir()
+	s, err := Create(root, "/work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.User("hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Assistant("working"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Steer("subagent child-1 finished:\ndone"); err != nil {
+		t.Fatal(err)
+	}
+	hist := s.History()
+	if len(hist) < 3 || hist[2].Role != "user" || !strings.Contains(hist[2].Text, "done") {
+		t.Fatalf("history %#v", hist)
+	}
+	if err := s.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBusySecondWriter(t *testing.T) {
 	root := t.TempDir()
 	s, err := Create(root, "/work")

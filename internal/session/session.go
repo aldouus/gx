@@ -229,6 +229,19 @@ func (s *Session) User(text string) (int, error) {
 	return turn, nil
 }
 
+// Steer appends a user message on the open turn. A subagent report uses this
+// so the parent can keep the turn and still see the report.
+func (s *Session) Steer(text string) error {
+	if !s.open {
+		return fmt.Errorf("no open turn")
+	}
+	body, err := json.Marshal(map[string]string{"text": text})
+	if err != nil {
+		return err
+	}
+	return s.append("user_message", s.turn, body, false)
+}
+
 // Assistant appends streamed assistant text for the open turn.
 func (s *Session) Assistant(text string) error {
 	if !s.open {
