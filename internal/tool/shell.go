@@ -139,7 +139,7 @@ func (t shellTool) run(ctx context.Context, command, cwd, profile string, yieldM
 		lp.mu.Unlock()
 		close(lp.done)
 	}()
-	quiet := time.NewTimer(5 * time.Second)
+	quiet := time.NewTimer(2 * time.Minute)
 	defer quiet.Stop()
 	timer := time.NewTimer(time.Duration(yieldMS) * time.Millisecond)
 	defer timer.Stop()
