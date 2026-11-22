@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -334,7 +335,7 @@ func runAsk(ctx context.Context, inv cli.Invocation, settings config.File, home,
 	for _, img := range inv.Images {
 		prompt += "\n[image: " + img + "]"
 	}
-	text, err := execute(ctx, inv, settings, home, cwd, prompt, errOut, false, nil, nil)
+	text, err := execute(ctx, inv, settings, home, cwd, prompt, errOut, false, nil, nil, nil)
 	if err != nil {
 		fmt.Fprintln(errOut, err)
 		return 1
@@ -350,8 +351,8 @@ func runAsk(ctx context.Context, inv cli.Invocation, settings config.File, home,
 	return 0
 }
 
-func execute(ctx context.Context, inv cli.Invocation, settings config.File, home, cwd, prompt string, errOut io.Writer, remember bool, approve agent.Approval, on func(agent.Event)) (string, error) {
-	model, _, err := resolveModel(inv, settings)
+func execute(ctx context.Context, inv cli.Invocation, settings config.File, home, cwd, prompt string, errOut io.Writer, remember bool, approve agent.Approval, on func(agent.Event), inbox *agent.Mailbox) (string, error) {
+	model, origin, err := resolveModel(inv, settings)
 	if err != nil {
 		return "", err
 	}
@@ -370,15 +371,10 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 	}
 	roots := []string{cwd}
 	roots = append(roots, inv.AddDirs...)
-	key := os.Getenv("OPENAI_API_KEY")
-	base := os.Getenv("OPENAI_BASE_URL")
-	if base == "" {
-		base = settings.BaseURL
+	prov, model, err := pickProvider(inv, settings, home, model, origin)
+	if err != nil {
+		return "", err
 	}
-	if key == "" {
-		return "", fmt.Errorf("no API key. Set OPENAI_API_KEY or run fx login")
-	}
-	prov := provider.OpenAI{BaseURL: base, APIKey: key}
 	root := home
 	var sess *session.Session
 	if inv.NoSave {
@@ -447,12 +443,16 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 	if found, err := skills.Discover(cwd, home); err == nil {
 		reg.Add(tool.Skill(found))
 	}
+	if inbox == nil {
+		inbox = &agent.Mailbox{}
+	}
 	r := &agent.Runner{
 		Provider:  prov,
 		Tools:     reg,
 		Mode:      mode,
 		Model:     model,
 		Session:   sess,
+		Inbox:     inbox,
 		Workspace: cwd,
 		Extra:     extra,
 		Approve: func(ctx context.Context, name, detail string) (bool, error) {
@@ -463,34 +463,41 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 			return false, nil
 		},
 	}
+	var childN atomic.Int64
 	reg.Add(tool.Subagent(func(ctx context.Context, message string, depth int) (string, error) {
+		name := fmt.Sprintf("child-%d", childN.Add(1))
 		child, err := session.Create(home, cwd)
 		if err != nil {
 			return "", err
 		}
-		defer child.Close()
+		inbox.Start(name)
 		childRunner := *r
 		childRunner.Session = child
 		childRunner.Depth = depth + 1
+		childRunner.Inbox = inbox
 		mgr := subagent.Manager{Run: func(ctx context.Context, req subagent.Request, emit func(string)) (string, error) {
+			defer child.Close()
 			return childRunner.Turn(ctx, req.Message, nil)
 		}}
-		ch, err := mgr.Start(ctx, subagent.Request{Name: "child", Message: message, Depth: depth, Report: "final"})
+		ch, err := mgr.Start(context.WithoutCancel(ctx), subagent.Request{Name: name, Message: message, Depth: depth, Report: "final"})
 		if err != nil {
+			_ = child.Close()
+			inbox.Finish(name, err.Error())
 			return "", err
 		}
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case rep, ok := <-ch:
+		go func() {
+			rep, ok := <-ch
 			if !ok {
-				return "", fmt.Errorf("subagent closed")
+				inbox.Finish(name, "closed")
+				return
 			}
-			if rep.Err != nil {
-				return rep.Text, rep.Err
+			text := rep.Text
+			if rep.Err != nil && text == "" {
+				text = rep.Err.Error()
 			}
-			return rep.Text, nil
-		}
+			inbox.Finish(name, text)
+		}()
+		return "subagent " + name + " started", nil
 	}))
 	sessions := attachMCP(ctx, reg, settings.MCPServers, errOut)
 	defer closeMCP(sessions)
@@ -501,7 +508,7 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(inv.TimeoutSec)*time.Second)
 		defer cancel()
 	}
-	return r.Turn(ctx, prompt, func(ev agent.Event) {
+	text, err := r.Turn(ctx, prompt, func(ev agent.Event) {
 		if on != nil {
 			on(ev)
 			return
@@ -510,6 +517,25 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 			fmt.Fprintf(errOut, "Running %s\n", ev.Name)
 		}
 	})
+	if err != nil || on != nil {
+		return text, err
+	}
+	for {
+		notes := inbox.Take()
+		if len(notes) == 0 {
+			if inbox.Pending() == 0 {
+				return text, nil
+			}
+			if err := inbox.Wait(ctx); err != nil {
+				return text, err
+			}
+			continue
+		}
+		text, err = r.Turn(ctx, strings.Join(notes, "\n\n"), nil)
+		if err != nil {
+			return text, err
+		}
+	}
 }
 
 func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, in io.Reader, out, errOut io.Writer) int {
@@ -533,7 +559,9 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 	if mode == "" {
 		mode = string(perm.Default)
 	}
-	tr.SetStatus(model, mode, os.Getenv("OPENAI_API_KEY") != "")
+	tr.SetStatus(model, mode, signedIn(home))
+	inbox := &agent.Mailbox{}
+	continued := inv.Continue || inv.Resume != ""
 	var comp tui.Composer
 	tr.SetInput(comp.Line, comp.Pos)
 	if err := tr.Paint(); err != nil {
@@ -563,7 +591,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 		tr.SetCtrlC(comp.Armed)
 		tr.SetInput(comp.Line, comp.Pos)
 		if act.Submit != "" {
-			if err := handleSubmit(inv, settings, home, cwd, tr, errOut, act.Submit); err != nil {
+			if err := handleSubmit(inv, settings, home, cwd, tr, errOut, act.Submit, &continued, inbox); err != nil {
 				_ = tr.FinishText()
 			}
 			tr.SetInput("", 0)
@@ -574,7 +602,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 	}
 }
 
-func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr *tui.Transcript, errOut io.Writer, line string) error {
+func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr *tui.Transcript, errOut io.Writer, line string, continued *bool, inbox *agent.Mailbox) error {
 	if name, rest, ok := cli.MatchSlash(line); strings.HasPrefix(strings.TrimSpace(line), "/") {
 		if !ok {
 			return tr.User("unknown command /" + name)
@@ -593,19 +621,42 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 				}
 				settings.PermissionMode = rest
 				_ = config.Save(home, settings)
-				tr.SetStatus(inv.Model, rest, os.Getenv("OPENAI_API_KEY") != "")
+				tr.SetStatus(inv.Model, rest, signedIn(home))
 			}
 			return tr.User("permission mode " + settings.PermissionMode)
 		case "model":
 			if rest != "" {
 				settings.Model = rest
 				_ = config.Save(home, settings)
-				tr.SetStatus(rest, settings.PermissionMode, os.Getenv("OPENAI_API_KEY") != "")
+				tr.SetStatus(rest, settings.PermissionMode, signedIn(home))
 			}
 			return tr.User("model " + settings.Model)
+		case "clear":
+			*continued = false
+			return tr.User("cleared")
+		case "skills":
+			return tr.User(skillList(cwd, home))
+		case "mcp":
+			return tr.User(mcpList(settings))
+		case "agents":
+			return tr.User(agentList(inbox))
+		case "resume":
+			text, err := resumeSession(home, rest)
+			if err != nil {
+				return tr.User(err.Error())
+			}
+			*continued = true
+			return tr.User(text)
+		case "compact":
+			return tr.User(compactSession(inv, settings, home, cwd, continued))
 		default:
 			return tr.User("/" + name + " is not available yet")
 		}
+	}
+	next := inv
+	if continued != nil && *continued {
+		next.Continue = true
+		next.Resume = ""
 	}
 	if err := tr.User(line); err != nil {
 		return err
@@ -637,7 +688,7 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 			}
 		}
 	}
-	_, err := execute(context.Background(), inv, settings, home, cwd, line, errOut, true, approve, func(ev agent.Event) {
+	_, err := execute(context.Background(), next, settings, home, cwd, line, errOut, true, approve, func(ev agent.Event) {
 		switch ev.Kind {
 		case "text":
 			_ = tr.Token(ev.Text)
@@ -652,7 +703,10 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 		case "compact":
 			_ = tr.Token(ev.Text + "\n")
 		}
-	})
+	}, inbox)
+	if err == nil && continued != nil {
+		*continued = true
+	}
 	return err
 }
 
@@ -689,4 +743,150 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func signedIn(home string) bool {
+	if os.Getenv("OPENAI_API_KEY") != "" {
+		return true
+	}
+	if _, err := auth.Load(home, "codex"); err == nil {
+		return true
+	}
+	_, err := auth.Load(home, "grok")
+	return err == nil
+}
+
+func pickProvider(inv cli.Invocation, settings config.File, home, model, origin string) (provider.Provider, string, error) {
+	name := providerName(inv, settings)
+	if name == "codex" || name == "grok" {
+		p, model, err := subscriptionProvider(home, name, model, origin)
+		return p, model, err
+	}
+	key := os.Getenv("OPENAI_API_KEY")
+	base := os.Getenv("OPENAI_BASE_URL")
+	if base == "" {
+		base = settings.BaseURL
+	}
+	if key != "" {
+		return provider.OpenAI{BaseURL: base, APIKey: key}, model, nil
+	}
+	for _, candidate := range []string{"grok", "codex"} {
+		if _, err := auth.Load(home, candidate); err == nil {
+			return subscriptionProvider(home, candidate, model, origin)
+		}
+	}
+	return nil, model, fmt.Errorf("no API key. Set OPENAI_API_KEY or run fx login")
+}
+
+func subscriptionProvider(home, name, model, origin string) (provider.Provider, string, error) {
+	cred, err := auth.Load(home, name)
+	if err != nil {
+		return nil, model, fmt.Errorf("no %s login. Run fx login %s", name, name)
+	}
+	if origin == "default" {
+		if name == "grok" {
+			model = "grok-4.7"
+		} else {
+			model = "gpt-5.1-codex"
+		}
+	}
+	header := auth.Authorization(cred)
+	token := strings.TrimPrefix(header, "Bearer ")
+	return provider.Responses{Kind: name, APIKey: token, AccountID: cred.AccountID}, model, nil
+}
+
+func skillList(cwd, home string) string {
+	found, err := skills.Discover(cwd, home)
+	if err != nil {
+		return err.Error()
+	}
+	if len(found) == 0 {
+		return "no skills"
+	}
+	var b strings.Builder
+	for _, sk := range found {
+		fmt.Fprintf(&b, "%s  %s\n", sk.Name, sk.Description)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func mcpList(settings config.File) string {
+	if len(settings.MCPServers) == 0 {
+		return "no mcp servers"
+	}
+	var b strings.Builder
+	for _, s := range settings.MCPServers {
+		fmt.Fprintf(&b, "%s  %s\n", s.Name, firstNonEmpty(s.URL, s.Command))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func agentList(inbox *agent.Mailbox) string {
+	kids := inbox.Agents()
+	if len(kids) == 0 {
+		return "no agents"
+	}
+	var b strings.Builder
+	for _, k := range kids {
+		state := "working"
+		if k.Done {
+			state = "done"
+		}
+		fmt.Fprintf(&b, "%s  %s\n", k.Name, state)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func resumeSession(home, rest string) (string, error) {
+	id := rest
+	if id == "" || id == "last" {
+		ids, err := session.List(home)
+		if err != nil {
+			return "", err
+		}
+		if len(ids) == 0 {
+			return "", fmt.Errorf("no session to resume")
+		}
+		id = ids[0]
+	}
+	sess, err := session.Open(home, id)
+	if err != nil {
+		return "", err
+	}
+	text := sess.TranscriptText()
+	_ = sess.Close()
+	if err := session.Remember(home, id); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(text) == "" {
+		text = "resumed " + id
+	}
+	return text, nil
+}
+
+func compactSession(inv cli.Invocation, settings config.File, home, cwd string, continued *bool) string {
+	model, origin, err := resolveModel(inv, settings)
+	if err != nil {
+		return err.Error()
+	}
+	prov, model, err := pickProvider(inv, settings, home, model, origin)
+	if err != nil {
+		return err.Error()
+	}
+	var sess *session.Session
+	if continued != nil && *continued {
+		id, _ := session.Remembered(home)
+		if id != "" {
+			sess, err = session.Open(home, id)
+		}
+	}
+	if sess == nil {
+		return "nothing to compact"
+	}
+	defer sess.Close()
+	r := &agent.Runner{Provider: prov, Model: model, Session: sess, Workspace: cwd}
+	if err := r.CompactNow(context.Background(), nil); err != nil {
+		return err.Error()
+	}
+	return "compacted"
 }
