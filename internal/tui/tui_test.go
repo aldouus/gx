@@ -116,6 +116,16 @@ func TestDetailShowsToolOutput(t *testing.T) {
 	if !strings.Contains(strip(buf.String()), "line2") {
 		t.Fatal("ctrl+o did not show the full tool output")
 	}
+	if !strings.Contains(buf.String(), "\x1b[?1049h") {
+		t.Fatal("ctrl+o did not open the alternate screen")
+	}
+	tr.ToggleDetail()
+	if err := tr.Paint(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "\x1b[?1049l") {
+		t.Fatal("ctrl+o did not restore the primary screen")
+	}
 }
 
 func strip(s string) string {

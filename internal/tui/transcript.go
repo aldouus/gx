@@ -33,13 +33,15 @@ type Transcript struct {
 	busy   bool
 	ctrlC  bool
 	detail bool
+	alt    bool
 
 	input  string
 	cursor int
 
-	live  string
-	tools []ToolLine
-	ask   *ToolLine
+	live    string
+	archive []string
+	tools   []ToolLine
+	ask     *ToolLine
 }
 
 func NewTranscript(out interface{ Write([]byte) (int, error) }, cols int) *Transcript {
@@ -58,7 +60,47 @@ func (t *Transcript) SetStatus(model, mode string, hasKey bool) {
 func (t *Transcript) SetBusy(busy bool)   { t.busy = busy }
 func (t *Transcript) SetCtrlC(armed bool) { t.ctrlC = armed }
 
-func (t *Transcript) ToggleDetail() { t.detail = !t.detail }
+func (t *Transcript) ToggleDetail() {
+	t.detail = !t.detail
+	if t.detail {
+		t.enterTranscript()
+		return
+	}
+	t.leaveTranscript()
+}
+
+func (t *Transcript) enterTranscript() {
+	t.alt = true
+	t.screen.Reset()
+	var b strings.Builder
+	b.WriteString("\x1b[?1049h\x1b[H")
+	if len(t.archive) == 0 {
+		b.WriteString(dim + "transcript is empty" + reset + "\r\n")
+	}
+	for _, line := range t.archive {
+		b.WriteString(line)
+		b.WriteString("\r\n")
+	}
+	for _, tool := range t.tools {
+		if tool.Output == "" {
+			continue
+		}
+		b.WriteString(tool.Name)
+		b.WriteString("\r\n")
+		b.WriteString(tool.Output)
+		if !strings.HasSuffix(tool.Output, "\n") {
+			b.WriteString("\r\n")
+		}
+	}
+	b.WriteString(dim + "ctrl+o closes the transcript" + reset + "\r\n")
+	_ = t.screen.WriteRaw(b.String())
+}
+
+func (t *Transcript) leaveTranscript() {
+	t.alt = false
+	t.screen.Reset()
+	_ = t.screen.WriteRaw("\x1b[?1049l")
+}
 
 func (t *Transcript) SetInput(line string, cursor int) {
 	t.input = line
@@ -80,6 +122,7 @@ func (t *Transcript) User(text string) error {
 	if len(lines) == 0 {
 		lines = []string{rail + "┃" + reset}
 	}
+	t.archive = append(t.archive, text)
 	return t.screen.Commit(lines)
 }
 
@@ -109,6 +152,9 @@ func (t *Transcript) FinishText() error {
 	}
 	if err := t.Paint(); err != nil {
 		return err
+	}
+	if t.live != "" {
+		t.archive = append(t.archive, t.live)
 	}
 	n := len(wrapPlain(t.live, t.cols))
 	t.live = ""
@@ -146,8 +192,11 @@ func (t *Transcript) ClearPermission() error {
 	return t.Paint()
 }
 
-// Paint redraws the frame.
+// Paint redraws the frame. The alternate transcript owns the screen until it closes.
 func (t *Transcript) Paint() error {
+	if t.alt {
+		return nil
+	}
 	frame := t.frame()
 	return t.screen.Paint(frame)
 }

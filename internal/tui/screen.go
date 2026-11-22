@@ -136,3 +136,15 @@ func (s *Screen) Paint(frame Frame) error {
 	_, err := io.WriteString(s.out, b.String())
 	return err
 }
+
+// Reset forgets the live frame. The next paint starts from a clear cursor.
+func (s *Screen) Reset() {
+	s.height = 0
+	s.prev = nil
+}
+
+// WriteRaw writes bytes without updating the frame.
+func (s *Screen) WriteRaw(text string) error {
+	_, err := io.WriteString(s.out, text)
+	return err
+}
