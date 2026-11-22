@@ -2,6 +2,8 @@ package app
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -68,5 +70,31 @@ func TestStatus(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "permission_mode=") || !strings.Contains(out.String(), "gx_home=") {
 		t.Fatal(out.String())
+	}
+}
+
+func TestAttachImage(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dot.png")
+	if err := os.WriteFile(path, []byte{0x89, 'P', 'N', 'G'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	tr := tui.NewTranscript(&buf, 80)
+	var images []string
+	if err := attachImage(dir, "dot.png", &images, tr); err != nil {
+		t.Fatal(err)
+	}
+	if len(images) != 1 || images[0] != path {
+		t.Fatalf("%v", images)
+	}
+	if !strings.Contains(buf.String(), "attached") {
+		t.Fatal(buf.String())
+	}
+	if err := listImages("clear", &images, tr); err != nil {
+		t.Fatal(err)
+	}
+	if len(images) != 0 {
+		t.Fatalf("cleared: %v", images)
 	}
 }

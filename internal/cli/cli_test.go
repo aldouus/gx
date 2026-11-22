@@ -65,9 +65,13 @@ func TestSlashTable(t *testing.T) {
 	if !ok || name != "quit" {
 		t.Fatal("quit missing")
 	}
-	name, _, ok = MatchSlash("/new")
-	if !ok || name != "new" {
-		t.Fatal("new missing")
+	name, _, ok = MatchSlash("/image")
+	if !ok || name != "image" {
+		t.Fatal("image missing")
+	}
+	name, _, ok = MatchSlash("/login")
+	if !ok || name != "login" {
+		t.Fatal("login missing")
 	}
 }
 

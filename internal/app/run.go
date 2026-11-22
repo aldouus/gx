@@ -582,6 +582,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 	tr.SetStatus(model, mode, signedIn(home))
 	inbox := &agent.Mailbox{}
 	grants := &agent.Grants{}
+	var images []string
 	continued := inv.Continue || inv.Resume != ""
 	var comp tui.Composer
 	tr.SetInput(comp.Line, comp.Pos)
@@ -612,7 +613,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 		tr.SetCtrlC(comp.Armed)
 		tr.SetInput(comp.Line, comp.Pos)
 		if act.Submit != "" {
-			err := handleSubmit(inv, settings, home, cwd, tr, errOut, act.Submit, &continued, inbox, grants)
+			err := handleSubmit(inv, settings, home, cwd, tr, errOut, act.Submit, &continued, inbox, grants, &images)
 			if err == errQuit {
 				return 0
 			}
@@ -627,7 +628,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 	}
 }
 
-func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr *tui.Transcript, errOut io.Writer, line string, continued *bool, inbox *agent.Mailbox, grants *agent.Grants) error {
+func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr *tui.Transcript, errOut io.Writer, line string, continued *bool, inbox *agent.Mailbox, grants *agent.Grants, images *[]string) error {
 	if name, rest, ok := cli.MatchSlash(line); strings.HasPrefix(strings.TrimSpace(line), "/") {
 		if !ok {
 			return tr.User("unknown command /" + name)
@@ -667,6 +668,14 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 			return tr.User("fx " + cli.Version)
 		case "quit", "exit":
 			return errQuit
+		case "login":
+			return loginSlash(home, rest, tr, inv, settings)
+		case "logout":
+			return logoutSlash(home, rest, tr, inv, settings)
+		case "image":
+			return attachImage(cwd, rest, images, tr)
+		case "images":
+			return listImages(rest, images, tr)
 		case "skills":
 			return tr.User(skillList(cwd, home))
 		case "mcp":
@@ -690,6 +699,10 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 	if continued != nil && *continued {
 		next.Continue = true
 		next.Resume = ""
+	}
+	if images != nil && len(*images) > 0 {
+		next.Images = append(append([]string{}, next.Images...), *images...)
+		*images = nil
 	}
 	if err := tr.User(line); err != nil {
 		return err
@@ -872,6 +885,84 @@ func agentList(inbox *agent.Mailbox) string {
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
+
+func loginSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, settings config.File) error {
+	name := "codex"
+	if rest != "" {
+		name = rest
+	}
+	if name == "vercel" {
+		return tr.User("vercel login is not part of this port")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	var shown strings.Builder
+	_, err := auth.Login(ctx, home, name, writerFunc(func(p []byte) (int, error) {
+		shown.Write(p)
+		return len(p), tr.User(strings.TrimRight(shown.String(), "\n"))
+	}))
+	if err != nil {
+		return tr.User(err.Error())
+	}
+	model, _, _ := resolveModel(inv, settings)
+	mode := settings.PermissionMode
+	if mode == "" {
+		mode = string(perm.Default)
+	}
+	tr.SetStatus(model, mode, signedIn(home))
+	return tr.User("signed in to " + name)
+}
+
+func logoutSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, settings config.File) error {
+	name := "codex"
+	if rest != "" {
+		name = rest
+	}
+	if err := auth.Logout(context.Background(), home, name); err != nil {
+		return tr.User(err.Error())
+	}
+	model, _, _ := resolveModel(inv, settings)
+	mode := settings.PermissionMode
+	if mode == "" {
+		mode = string(perm.Default)
+	}
+	tr.SetStatus(model, mode, signedIn(home))
+	return tr.User("signed out of " + name)
+}
+
+func attachImage(cwd, rest string, images *[]string, tr *tui.Transcript) error {
+	if strings.TrimSpace(rest) == "" {
+		return tr.User("usage: /image PATH")
+	}
+	path := rest
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(cwd, path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		return tr.User(err.Error())
+	}
+	if images != nil {
+		*images = append(*images, path)
+	}
+	return tr.User("attached " + path)
+}
+
+func listImages(rest string, images *[]string, tr *tui.Transcript) error {
+	if rest == "clear" {
+		if images != nil {
+			*images = nil
+		}
+		return tr.User("images cleared")
+	}
+	if images == nil || len(*images) == 0 {
+		return tr.User("no images attached")
+	}
+	return tr.User(strings.Join(*images, "\n"))
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 func statusLine(inv cli.Invocation, settings config.File, cwd string) string {
 	model, _, _ := resolveModel(inv, settings)
