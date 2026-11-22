@@ -175,9 +175,9 @@ func TestAskDeniesShell(t *testing.T) {
 		Mode:     perm.Ask,
 		Model:    "test",
 		Session:  s,
-		Approve: func(context.Context, string, string) (bool, error) {
+		Approve: func(context.Context, string, string) (Verdict, error) {
 			prompted = true
-			return false, nil
+			return Deny, nil
 		},
 	}
 	if _, err := r.Turn(context.Background(), "run it", nil); err != nil {
@@ -249,7 +249,7 @@ func TestAutoReviewsShell(t *testing.T) {
 			reviewed = true
 			return false, "hold", nil
 		},
-		Approve: func(context.Context, string, string) (bool, error) { return false, nil },
+		Approve: func(context.Context, string, string) (Verdict, error) { return Deny, nil },
 	}
 	if _, err := r.Turn(context.Background(), "x", nil); err != nil {
 		t.Fatal(err)
@@ -258,4 +258,42 @@ func TestAutoReviewsShell(t *testing.T) {
 		t.Fatal("auto mode did not review")
 	}
 	_ = json.RawMessage(nil)
+}
+
+func TestAllowAlwaysSkipsTheNextPrompt(t *testing.T) {
+	root := t.TempDir()
+	s, err := session.Create(root, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	args := `{"action":"run","command":"printf hi","profile":"clean"}`
+	prov := &script{steps: [][]provider.Delta{
+		{{Call: &provider.CallDelta{Index: 0, ID: "c1", Name: "shell", Args: args}}, {Done: true}},
+		{{Text: "once"}, {Done: true}},
+		{{Call: &provider.CallDelta{Index: 0, ID: "c2", Name: "shell", Args: args}}, {Done: true}},
+		{{Text: "again"}, {Done: true}},
+	}}
+	prompts := 0
+	r := &Runner{
+		Provider: prov,
+		Tools:    tool.Builtin(tool.Workspace{Roots: []string{t.TempDir()}}),
+		Mode:     perm.Ask,
+		Model:    "test",
+		Session:  s,
+		Grants:   &Grants{},
+		Approve: func(context.Context, string, string) (Verdict, error) {
+			prompts++
+			return Always, nil
+		},
+	}
+	if _, err := r.Turn(context.Background(), "first", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Turn(context.Background(), "second", nil); err != nil {
+		t.Fatal(err)
+	}
+	if prompts != 1 {
+		t.Fatalf("prompts = %d", prompts)
+	}
 }

@@ -332,7 +332,7 @@ func runAsk(ctx context.Context, inv cli.Invocation, settings config.File, home,
 		fmt.Fprintln(errOut, strings.TrimSpace(cli.AskHelp()))
 		return 2
 	}
-	text, err := execute(ctx, inv, settings, home, cwd, prompt, errOut, false, nil, nil, nil)
+	text, err := execute(ctx, inv, settings, home, cwd, prompt, errOut, false, nil, nil, nil, nil)
 	if err != nil {
 		fmt.Fprintln(errOut, err)
 		return 1
@@ -348,7 +348,7 @@ func runAsk(ctx context.Context, inv cli.Invocation, settings config.File, home,
 	return 0
 }
 
-func execute(ctx context.Context, inv cli.Invocation, settings config.File, home, cwd, prompt string, errOut io.Writer, remember bool, approve agent.Approval, on func(agent.Event), inbox *agent.Mailbox) (string, error) {
+func execute(ctx context.Context, inv cli.Invocation, settings config.File, home, cwd, prompt string, errOut io.Writer, remember bool, approve agent.Approval, on func(agent.Event), inbox *agent.Mailbox, grants *agent.Grants) (string, error) {
 	model, origin, err := resolveModel(inv, settings)
 	if err != nil {
 		return "", err
@@ -453,13 +453,14 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 		Images:    inv.Images,
 		Workspace: cwd,
 		Extra:     extra,
-		Approve: func(ctx context.Context, name, detail string) (bool, error) {
+		Approve: func(ctx context.Context, name, detail string) (agent.Verdict, error) {
 			if approve != nil {
 				return approve(ctx, name, detail)
 			}
 			fmt.Fprintf(errOut, "Allow %s? %s\n", name, detail)
-			return false, nil
+			return agent.Deny, nil
 		},
+		Grants: grants,
 	}
 	var childN atomic.Int64
 	reg.Add(tool.Subagent(func(ctx context.Context, message string, depth int) (string, error) {
@@ -559,6 +560,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 	}
 	tr.SetStatus(model, mode, signedIn(home))
 	inbox := &agent.Mailbox{}
+	grants := &agent.Grants{}
 	continued := inv.Continue || inv.Resume != ""
 	var comp tui.Composer
 	tr.SetInput(comp.Line, comp.Pos)
@@ -589,7 +591,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 		tr.SetCtrlC(comp.Armed)
 		tr.SetInput(comp.Line, comp.Pos)
 		if act.Submit != "" {
-			if err := handleSubmit(inv, settings, home, cwd, tr, errOut, act.Submit, &continued, inbox); err != nil {
+			if err := handleSubmit(inv, settings, home, cwd, tr, errOut, act.Submit, &continued, inbox, grants); err != nil {
 				_ = tr.FinishText()
 			}
 			tr.SetInput("", 0)
@@ -600,7 +602,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 	}
 }
 
-func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr *tui.Transcript, errOut io.Writer, line string, continued *bool, inbox *agent.Mailbox) error {
+func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr *tui.Transcript, errOut io.Writer, line string, continued *bool, inbox *agent.Mailbox, grants *agent.Grants) error {
 	if name, rest, ok := cli.MatchSlash(line); strings.HasPrefix(strings.TrimSpace(line), "/") {
 		if !ok {
 			return tr.User("unknown command /" + name)
@@ -661,27 +663,30 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 	}
 	tr.SetBusy(true)
 	defer tr.SetBusy(false)
-	approve := func(ctx context.Context, name, detail string) (bool, error) {
+	approve := func(ctx context.Context, name, detail string) (agent.Verdict, error) {
 		if err := ctx.Err(); err != nil {
-			return false, err
+			return agent.Deny, err
 		}
 		if err := tr.Permission(name, detail); err != nil {
-			return false, err
+			return agent.Deny, err
 		}
 		buf := make([]byte, 32)
 		for {
 			n, err := os.Stdin.Read(buf)
 			if err != nil {
-				return false, err
+				return agent.Deny, err
 			}
 			for _, b := range buf[:n] {
 				switch b {
-				case 'y', 'Y':
+				case '1', 'y', 'Y':
 					_ = tr.ClearPermission()
-					return true, nil
-				case 'n', 'N', 3, 0x1b:
+					return agent.Once, nil
+				case '2':
 					_ = tr.ClearPermission()
-					return false, nil
+					return agent.Always, nil
+				case '3', 'n', 'N', 3, 0x1b:
+					_ = tr.ClearPermission()
+					return agent.Deny, nil
 				}
 			}
 		}
@@ -701,7 +706,7 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 		case "compact":
 			_ = tr.Token(ev.Text + "\n")
 		}
-	}, inbox)
+	}, inbox, grants)
 	if err == nil && continued != nil {
 		*continued = true
 	}

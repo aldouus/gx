@@ -26,8 +26,18 @@ type Event struct {
 	Detail string
 }
 
-// Approval asks the person. Returning false denies the call.
-type Approval func(ctx context.Context, name, detail string) (bool, error)
+// Verdict is the person's answer to a permission prompt.
+type Verdict string
+
+const (
+	Deny   Verdict = "deny"
+	Once   Verdict = "once"
+	Always Verdict = "always"
+)
+
+// Approval asks the person. Deny refuses the call. Always remembers it for
+// the rest of the process, for the same tool and target.
+type Approval func(ctx context.Context, name, detail string) (Verdict, error)
 
 // Reviewer is the auto-mode check. allow true runs the call. allow false
 // holds it for Approval.
@@ -42,6 +52,7 @@ type Runner struct {
 	Session   *session.Session
 	Approve   Approval
 	Review    Reviewer
+	Grants    *Grants
 	Inbox     *Mailbox
 	Workspace string
 	Extra     string
@@ -256,6 +267,10 @@ func (r *Runner) runTools(ctx context.Context, calls []provider.ToolCall, emit f
 }
 
 func (r *Runner) allow(ctx context.Context, call provider.ToolCall, emit func(Event)) (bool, error) {
+	target := grantTarget(call)
+	if r.Grants != nil && r.Grants.Allows(call.Name, target) {
+		return true, nil
+	}
 	t, ok := r.Tools.Get(call.Name)
 	spec := perm.Spec{Name: call.Name, ShellCommand: shellCommand(call)}
 	if ok {
@@ -286,10 +301,29 @@ func (r *Runner) allow(ctx context.Context, call provider.ToolCall, emit func(Ev
 		if r.Approve == nil {
 			return false, nil
 		}
-		return r.Approve(ctx, call.Name, call.Args)
+		verdict, err := r.Approve(ctx, call.Name, call.Args)
+		if err != nil {
+			return false, err
+		}
+		if verdict == Always && r.Grants != nil {
+			r.Grants.Add(call.Name, target)
+		}
+		return verdict == Once || verdict == Always, nil
 	default:
 		return false, nil
 	}
+}
+
+func grantTarget(call provider.ToolCall) string {
+	var m map[string]any
+	_ = json.Unmarshal([]byte(call.Args), &m)
+	for _, key := range []string{"command", "path", "url"} {
+		s, _ := m[key].(string)
+		if s != "" {
+			return s
+		}
+	}
+	return "*"
 }
 
 func shellCommand(call provider.ToolCall) string {

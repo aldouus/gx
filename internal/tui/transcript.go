@@ -228,7 +228,9 @@ func (t *Transcript) frame() Frame {
 	if t.ask != nil {
 		rows = append(rows, bold+"Allow "+t.ask.Name+"?"+reset)
 		rows = append(rows, "  "+width.Clip(oneLine(t.ask.Detail), t.cols-2))
-		rows = append(rows, dim+"  y / n"+reset)
+		rows = append(rows, dim+"  1. Allow once"+reset)
+		rows = append(rows, dim+"  2. Allow always"+reset)
+		rows = append(rows, dim+"  3. Deny"+reset)
 	}
 	rows = append(rows, divC+strings.Repeat("─", t.cols)+reset)
 	inputRow := len(rows)

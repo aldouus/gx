@@ -39,6 +39,9 @@ func TestTranscriptOrderAndDiff(t *testing.T) {
 	if strings.Count(plain, "abc") != 1 {
 		t.Fatalf("assistant text redrawn:\n%s", plain)
 	}
+	if !strings.Contains(plain, "1. Allow once") || !strings.Contains(plain, "2. Allow always") || !strings.Contains(plain, "3. Deny") {
+		t.Fatal("permission prompt is missing the three choices")
+	}
 	before := buf.Len()
 	tr.SetInput("next", 4)
 	if err := tr.Paint(); err != nil {
