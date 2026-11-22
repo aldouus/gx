@@ -332,9 +332,6 @@ func runAsk(ctx context.Context, inv cli.Invocation, settings config.File, home,
 		fmt.Fprintln(errOut, strings.TrimSpace(cli.AskHelp()))
 		return 2
 	}
-	for _, img := range inv.Images {
-		prompt += "\n[image: " + img + "]"
-	}
 	text, err := execute(ctx, inv, settings, home, cwd, prompt, errOut, false, nil, nil, nil)
 	if err != nil {
 		fmt.Fprintln(errOut, err)
@@ -453,6 +450,7 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 		Model:     model,
 		Session:   sess,
 		Inbox:     inbox,
+		Images:    inv.Images,
 		Workspace: cwd,
 		Extra:     extra,
 		Approve: func(ctx context.Context, name, detail string) (bool, error) {

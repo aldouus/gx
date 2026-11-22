@@ -48,6 +48,7 @@ type Runner struct {
 	CompactAt int
 	MaxRounds int
 	Depth     int
+	Images    []string
 }
 
 // Turn sends prompt, streams the reply, runs tool calls, and commits the turn.
@@ -62,7 +63,7 @@ func (r *Runner) Turn(ctx context.Context, prompt string, emit func(Event)) (str
 	if notes := r.Inbox.Take(); len(notes) > 0 {
 		prompt = strings.Join(notes, "\n\n") + "\n\n" + prompt
 	}
-	if _, err := r.Session.User(prompt); err != nil {
+	if _, err := r.Session.UserImages(prompt, r.Images); err != nil {
 		return "", err
 	}
 	var final string
@@ -322,6 +323,17 @@ func (r *Runner) messages() []provider.Message {
 	out := []provider.Message{{Role: "system", Text: sys}}
 	for _, m := range r.Session.History() {
 		pm := provider.Message{Role: m.Role, Text: m.Text, ToolID: m.ToolID}
+		for _, path := range m.Images {
+			url, err := provider.FileDataURL(path)
+			if err != nil {
+				pm.Text += "\n[image: " + path + " unreadable]"
+				continue
+			}
+			if len(pm.Parts) == 0 && pm.Text != "" {
+				pm.Parts = append(pm.Parts, provider.Part{Text: pm.Text})
+			}
+			pm.Parts = append(pm.Parts, provider.Part{ImageURL: url})
+		}
 		for _, c := range m.ToolCalls {
 			pm.ToolCalls = append(pm.ToolCalls, provider.ToolCall{ID: c.ID, Name: c.Name, Args: c.Args})
 		}

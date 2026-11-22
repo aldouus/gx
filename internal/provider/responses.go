@@ -111,10 +111,8 @@ func encodeResponses(req Request) map[string]any {
 			}
 		case "user":
 			input = append(input, map[string]any{
-				"role": "user",
-				"content": []any{
-					map[string]any{"type": "input_text", "text": m.Text},
-				},
+				"role":    "user",
+				"content": responseUserContent(m),
 			})
 		case "assistant":
 			if m.Text != "" {
@@ -173,6 +171,25 @@ func encodeResponses(req Request) map[string]any {
 		body["tool_choice"] = "auto"
 	}
 	return body
+}
+
+func responseUserContent(m Message) []any {
+	var content []any
+	if len(m.Parts) == 0 {
+		content = append(content, map[string]any{"type": "input_text", "text": m.Text})
+		return content
+	}
+	for _, p := range m.Parts {
+		if p.ImageURL != "" {
+			content = append(content, map[string]any{"type": "input_image", "image_url": p.ImageURL})
+			continue
+		}
+		content = append(content, map[string]any{"type": "input_text", "text": p.Text})
+	}
+	if len(content) == 0 {
+		content = append(content, map[string]any{"type": "input_text", "text": m.Text})
+	}
+	return content
 }
 
 // DecodeResponses reads Responses SSE events and emits text and tool-call deltas.

@@ -215,11 +215,20 @@ func (s *Session) fold(ev Event) {
 
 // User appends a user message and opens a turn.
 func (s *Session) User(text string) (int, error) {
+	return s.UserImages(text, nil)
+}
+
+// UserImages appends a user message and the image paths attached to it.
+func (s *Session) UserImages(text string, images []string) (int, error) {
 	if s.open {
 		return 0, fmt.Errorf("turn %d is still open", s.turn)
 	}
 	turn := s.turn + 1
-	body, err := json.Marshal(map[string]string{"text": text})
+	payload := map[string]any{"text": text}
+	if len(images) > 0 {
+		payload["images"] = images
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return 0, err
 	}
@@ -356,6 +365,7 @@ type Message struct {
 	ToolCalls []ToolCall
 	ToolID    string
 	ToolName  string
+	Images    []string
 }
 
 // ToolCall is a function call the model already emitted.
@@ -379,7 +389,7 @@ func (s *Session) History() []Message {
 		switch ev.Kind {
 		case "user_message":
 			flush()
-			cur = &Message{Role: "user", Text: textField(ev.Data, "text")}
+			cur = &Message{Role: "user", Text: textField(ev.Data, "text"), Images: imagesField(ev.Data)}
 		case "assistant_delta":
 			if cur == nil || cur.Role != "assistant" {
 				flush()
@@ -431,6 +441,22 @@ func textField(raw json.RawMessage, key string) string {
 	}
 	s, _ := m[key].(string)
 	return s
+}
+
+func imagesField(raw json.RawMessage) []string {
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	list, _ := m["images"].([]any)
+	var out []string
+	for _, item := range list {
+		s, _ := item.(string)
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // TranscriptText is the text a person should see again on resume.
