@@ -1,0 +1,85 @@
+package tool
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestSnapshotCapturedOnce(t *testing.T) {
+	home := t.TempDir()
+	shellPath := filepath.Join(home, "fake-sh")
+	script := `#!/bin/sh
+if [ "$1" = "-lic" ]; then
+  printf '%s\n' '---ENV---'
+  printf '%s\n' 'FOO=from-rc'
+  printf '%s\n' 'PATH=/bin:/usr/bin'
+  printf '%s\n' '---PRELUDE---'
+  printf '%s\n' "alias hi='printf snapshot'"
+  printf 'x\n' >> "$HOME/captures"
+  exit 0
+fi
+if [ "$1" = "-c" ]; then
+  sh -c "$2"
+  exit $?
+fi
+exit 1
+`
+	if err := os.WriteFile(shellPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	old := resolveShell
+	resolveShell = func() string { return shellPath }
+	t.Cleanup(func() { resolveShell = old })
+	resetSnapshot()
+	t.Cleanup(resetSnapshot)
+
+	ws := Workspace{Roots: []string{home}}
+	out, err := Shell(ws).Run(t.Context(), []byte(`{"action":"run","command":"printf $FOO","profile":"user","yield_time_ms":5000}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "from-rc") {
+		t.Fatalf("first run %s", out)
+	}
+	out, err = Shell(ws).Run(t.Context(), []byte(`{"action":"run","command":"printf $FOO","profile":"user","yield_time_ms":5000}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "from-rc") {
+		t.Fatalf("second run %s", out)
+	}
+	got, err := os.ReadFile(filepath.Join(home, "captures"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(got), "x") != 1 {
+		t.Fatalf("captures %q", got)
+	}
+}
+
+func TestCleanShellSkipsSnapshot(t *testing.T) {
+	home := t.TempDir()
+	shellPath := filepath.Join(home, "fake-sh")
+	script := "#!/bin/sh\nif [ \"$1\" = \"-lic\" ]; then printf 'x\\n' >> \"$HOME/captures\"; exit 0; fi\nif [ \"$1\" = \"-c\" ]; then sh -c \"$2\"; exit $?; fi\nexit 1\n"
+	if err := os.WriteFile(shellPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	old := resolveShell
+	resolveShell = func() string { return shellPath }
+	t.Cleanup(func() { resolveShell = old })
+	resetSnapshot()
+	out, err := Shell(Workspace{Roots: []string{home}}).Run(t.Context(), []byte(`{"action":"run","command":"printf hi","profile":"clean","yield_time_ms":5000}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "hi") || !strings.Contains(out, "<stdout>") || !strings.Contains(out, "exit_code: 0") {
+		t.Fatalf("out %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(home, "captures")); !os.IsNotExist(err) {
+		t.Fatal("clean profile captured startup")
+	}
+}

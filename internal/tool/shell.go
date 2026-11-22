@@ -32,14 +32,16 @@ func (shellTool) Schema() json.RawMessage {
 }
 
 type liveProc struct {
-	cmd    *exec.Cmd
-	buf    bytes.Buffer
-	mu     sync.Mutex
-	sent   int
-	done   chan struct{}
-	stdin  io.WriteCloser
-	exited bool
-	code   int
+	cmd     *exec.Cmd
+	stdout  bytes.Buffer
+	stderr  bytes.Buffer
+	mu      sync.Mutex
+	sentOut int
+	sentErr int
+	done    chan struct{}
+	stdin   io.WriteCloser
+	exited  bool
+	code    int
 }
 
 var (
@@ -98,17 +100,26 @@ func (t shellTool) run(ctx context.Context, command, cwd, profile string, yieldM
 		}
 		cwd = resolved
 	}
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-	args := []string{"-c", command}
-	if profile != "clean" {
-		args = []string{"-lc", command}
+	shell := resolveShell()
+	var args []string
+	env := append(os.Environ(), "AI_AGENT=fx")
+	if profile == "clean" {
+		args = cleanArgs(shell, command)
+	} else {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = cwd
+		}
+		g, err := generationFor(ctx, shell, home)
+		if err != nil {
+			args = []string{"-lic", command}
+		} else {
+			shell, args, env = g.command(command)
+		}
 	}
 	cmd := exec.Command(shell, args...)
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), "AI_AGENT=fx")
+	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -129,8 +140,8 @@ func (t shellTool) run(ctx context.Context, command, cwd, profile string, yieldM
 	go func() {
 		var wg sync.WaitGroup
 		wg.Add(2)
-		go func() { io.Copy(&lockedWriter{lp: lp}, stdout); wg.Done() }()
-		go func() { io.Copy(&lockedWriter{lp: lp}, stderr); wg.Done() }()
+		go func() { io.Copy(&streamWriter{lp: lp, errStream: false}, stdout); wg.Done() }()
+		go func() { io.Copy(&streamWriter{lp: lp, errStream: true}, stderr); wg.Done() }()
 		wg.Wait()
 		err := cmd.Wait()
 		lp.mu.Lock()
@@ -162,7 +173,7 @@ func (t shellTool) run(ctx context.Context, command, cwd, profile string, yieldM
 			return lp.output() + fmt.Sprintf("\nexit_code: timeout"), nil
 		case <-quiet.C:
 			lp.mu.Lock()
-			n := lp.buf.Len()
+			n := lp.stdout.Len() + lp.stderr.Len()
 			lp.mu.Unlock()
 			if n == 0 && !quietNoted {
 				Progress(ctx, "quiet: command has produced no output")
@@ -177,24 +188,51 @@ func (t shellTool) run(ctx context.Context, command, cwd, profile string, yieldM
 	}
 }
 
-type lockedWriter struct{ lp *liveProc }
+type streamWriter struct {
+	lp        *liveProc
+	errStream bool
+}
 
-func (w lockedWriter) Write(p []byte) (int, error) {
+func (w streamWriter) Write(p []byte) (int, error) {
 	w.lp.mu.Lock()
 	defer w.lp.mu.Unlock()
-	return w.lp.buf.Write(p)
+	if w.errStream {
+		return w.lp.stderr.Write(p)
+	}
+	return w.lp.stdout.Write(p)
 }
 
 func (lp *liveProc) output() string {
 	lp.mu.Lock()
 	defer lp.mu.Unlock()
-	text := lp.buf.String()
-	if lp.sent > len(text) {
-		return ""
+	so := lp.stdout.String()
+	se := lp.stderr.String()
+	newOut := so[lp.sentOut:]
+	newErr := se[lp.sentErr:]
+	lp.sentOut = len(so)
+	lp.sentErr = len(se)
+	return formatStreams(newOut, newErr)
+}
+
+func formatStreams(stdout, stderr string) string {
+	var b strings.Builder
+	if stdout != "" {
+		b.WriteString("<stdout>\n")
+		b.WriteString(stdout)
+		if !strings.HasSuffix(stdout, "\n") {
+			b.WriteByte('\n')
+		}
+		b.WriteString("</stdout>\n")
 	}
-	out := text[lp.sent:]
-	lp.sent = len(text)
-	return out
+	if stderr != "" {
+		b.WriteString("<stderr>\n")
+		b.WriteString(stderr)
+		if !strings.HasSuffix(stderr, "\n") {
+			b.WriteByte('\n')
+		}
+		b.WriteString("</stderr>\n")
+	}
+	return b.String()
 }
 
 func store(lp *liveProc) string {
