@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReadEditGrep(t *testing.T) {
@@ -70,5 +71,31 @@ func TestShellCancel(t *testing.T) {
 	_, err := Shell(ws).Run(ctx, json.RawMessage(`{"action":"run","command":"sleep 30","profile":"clean","yield_time_ms":1000}`))
 	if err == nil {
 		t.Fatal("expected cancel")
+	}
+}
+
+func TestCancelSendsTermThenKill(t *testing.T) {
+	dir := t.TempDir()
+	ws := Workspace{Roots: []string{dir}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	out, err := Shell(ws).Run(ctx, json.RawMessage(`{"action":"run","command":"trap '' TERM; echo READY; while true; do :; done","profile":"clean","yield_time_ms":10000}`))
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected cancel")
+	}
+	if !strings.Contains(out, "READY") {
+		t.Fatalf("command did not start: %q", out)
+	}
+	if elapsed < 900*time.Millisecond {
+		t.Fatalf("killed before the 800ms grace: %s", elapsed)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("grace ran long: %s", elapsed)
 	}
 }

@@ -164,7 +164,7 @@ func (t shellTool) run(ctx context.Context, command, cwd, profile string, yieldM
 	for {
 		select {
 		case <-ctx.Done():
-			kill(cmd)
+			terminate(cmd, lp.done)
 			<-lp.done
 			return lp.output() + "\ninterrupted", ctx.Err()
 		case <-timeout:
@@ -261,7 +261,8 @@ func interact(ctx context.Context, id, chars string, yieldMS int) (string, error
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		kill(lp.cmd)
+		terminate(lp.cmd, lp.done)
+		<-lp.done
 		return lp.output() + "\ninterrupted", ctx.Err()
 	case <-lp.done:
 		procsMu.Lock()
@@ -283,13 +284,29 @@ func stop(id string, force bool) (string, error) {
 	}
 	if force {
 		kill(lp.cmd)
-	} else if lp.cmd.Process != nil {
-		_ = syscall.Kill(-lp.cmd.Process.Pid, syscall.SIGINT)
-		time.Sleep(50 * time.Millisecond)
-		kill(lp.cmd)
+	} else {
+		terminate(lp.cmd, lp.done)
 	}
 	<-lp.done
 	return fmt.Sprintf("%s\nexit_code: %d", strings.TrimRight(lp.output(), "\n"), lp.code), nil
+}
+
+const termGrace = 800 * time.Millisecond
+
+// terminate signals the process group with SIGTERM and, if it is still
+// running after 800ms, with SIGKILL. done closes when the process has exited.
+func terminate(cmd *exec.Cmd, done <-chan struct{}) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	timer := time.NewTimer(termGrace)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 }
 
 func kill(cmd *exec.Cmd) {
