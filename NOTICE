@@ -1,0 +1,6 @@
+gx is a Go port of fx (https://github.com/vercel-labs/fx).
+
+fx is Copyright 2025 Vercel, Inc. and licensed under the Apache License, Version 2.0.
+The system prompt embedded in this binary is taken from that project.
+This Go implementation is licensed under the Apache License, Version 2.0.
+See the LICENSE file.
