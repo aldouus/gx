@@ -17,7 +17,6 @@ import (
 	"gx/internal/auth"
 	"gx/internal/cli"
 	"gx/internal/config"
-	"gx/internal/mcp"
 	"gx/internal/perm"
 	"gx/internal/provider"
 	"gx/internal/session"
@@ -89,26 +88,8 @@ func Run(args []string, in io.Reader, out, errOut io.Writer) int {
 			fmt.Fprintln(out, "no mcp servers")
 			return 0
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
 		for _, s := range settings.MCPServers {
 			fmt.Fprintf(out, "%s\t%s\n", s.Name, firstNonEmpty(s.URL, s.Command))
-			sess, err := mcp.Dial(ctx, mcp.Server{
-				Name: s.Name, Command: s.Command, Args: s.Args, URL: s.URL, Env: s.Env,
-			})
-			if err != nil {
-				fmt.Fprintf(errOut, "mcp %s: %v\n", s.Name, err)
-				continue
-			}
-			listed, err := sess.List(ctx)
-			_ = sess.Close()
-			if err != nil {
-				fmt.Fprintf(errOut, "mcp %s: %v\n", s.Name, err)
-				continue
-			}
-			for _, item := range listed {
-				fmt.Fprintf(out, "  %s\n", mcpToolName(s.Name, item.Name))
-			}
 		}
 		return 0
 	case "login":
