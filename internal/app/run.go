@@ -1611,10 +1611,11 @@ func modelSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, setti
 		tr.SetStatus(settings.Model, settings.PermissionMode, signedIn(home))
 		return tr.User("model " + settings.Model)
 	}
-	ids, err := listProviderModels(home, inv, *settings)
+	models, err := listProviderModels(home, inv, *settings)
 	if err != nil {
 		return tr.User(err.Error())
 	}
+	ids := modelIDs(models)
 	if len(ids) == 0 {
 		return tr.User("no models. Run /login")
 	}
@@ -1630,7 +1631,7 @@ func modelSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, setti
 		return tr.User("model cancelled")
 	}
 	settings.Model = ids[sel]
-	if err := chooseEffort(home, settings, tr); err != nil {
+	if err := chooseEffort(settings, tr, effortsFor(models, settings.Model)); err != nil {
 		return err
 	}
 	_ = config.Save(home, *settings)
@@ -1639,8 +1640,11 @@ func modelSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, setti
 	return tr.User("model " + settings.Model + "\neffort " + shownEffort(settings.Effort))
 }
 
-func chooseEffort(home string, settings *config.File, tr *tui.Transcript) error {
-	levels := effortLevels()
+func chooseEffort(settings *config.File, tr *tui.Transcript, modelEfforts []string) error {
+	levels := effortLevels(modelEfforts)
+	if len(levels) == 0 {
+		return nil
+	}
 	items := make([]string, len(levels))
 	for i, level := range levels {
 		items[i] = level
@@ -1664,12 +1668,14 @@ func chooseEffort(home string, settings *config.File, tr *tui.Transcript) error 
 	} else {
 		settings.Effort = levels[sel]
 	}
-	_ = home
 	return nil
 }
 
-func effortLevels() []string {
-	return []string{"default", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
+func effortLevels(modelEfforts []string) []string {
+	if len(modelEfforts) == 0 {
+		return nil
+	}
+	return append([]string{"default"}, modelEfforts...)
 }
 
 func shownEffort(effort string) string {

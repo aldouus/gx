@@ -14,7 +14,14 @@ import (
 	"gx/internal/config"
 )
 
-func listProviderModels(home string, inv cli.Invocation, settings config.File) ([]string, error) {
+// catalogModel is one picker row. Efforts are the reasoning levels that
+// model offers. They are not models, and a fast variant is not a row.
+type catalogModel struct {
+	ID      string
+	Efforts []string
+}
+
+func listProviderModels(home string, inv cli.Invocation, settings config.File) ([]catalogModel, error) {
 	name := providerName(inv, settings)
 	if name == "" || name == "openai" {
 		for _, candidate := range []string{"grok", "codex"} {
@@ -36,7 +43,7 @@ func listProviderModels(home string, inv cli.Invocation, settings config.File) (
 	return fetchModels(ctx, name, cred)
 }
 
-func fetchModels(ctx context.Context, name string, cred auth.Credential) ([]string, error) {
+func fetchModels(ctx context.Context, name string, cred auth.Credential) ([]catalogModel, error) {
 	url := "https://chatgpt.com/backend-api/codex/models"
 	if name == "grok" {
 		url = "https://cli-chat-proxy.grok.com/v1/models"
@@ -70,37 +77,117 @@ func fetchModels(ctx context.Context, name string, cred auth.Credential) ([]stri
 	if res.StatusCode >= 300 {
 		return nil, fmt.Errorf("models status %d", res.StatusCode)
 	}
-	return modelIDs(body), nil
+	if name == "grok" {
+		return parseGrokCatalog(body), nil
+	}
+	return parseCodexCatalog(body), nil
 }
 
-func modelIDs(body []byte) []string {
-	var root any
+func parseGrokCatalog(body []byte) []catalogModel {
+	var root struct {
+		Data []map[string]any `json:"data"`
+	}
 	if json.Unmarshal(body, &root) != nil {
 		return nil
 	}
-	var ids []string
+	var models []catalogModel
 	seen := map[string]bool{}
-	var walk func(any)
-	walk = func(v any) {
-		switch n := v.(type) {
-		case map[string]any:
-			if id, ok := n["id"].(string); ok && id != "" && !seen[id] && !strings.Contains(id, " ") {
-				seen[id] = true
-				ids = append(ids, id)
-			}
-			if slug, ok := n["slug"].(string); ok && slug != "" && !seen[slug] {
-				seen[slug] = true
-				ids = append(ids, slug)
-			}
-			for _, child := range n {
-				walk(child)
-			}
-		case []any:
-			for _, child := range n {
-				walk(child)
-			}
+	for _, object := range root.Data {
+		if stringField(object, "api_backend") != "responses" {
+			continue
+		}
+		id := stringField(object, "model")
+		if id == "" || seen[id] || fastVariant(id) {
+			continue
+		}
+		seen[id] = true
+		models = append(models, catalogModel{ID: id, Efforts: grokEfforts(object)})
+	}
+	return models
+}
+
+func parseCodexCatalog(body []byte) []catalogModel {
+	var root struct {
+		Models []map[string]any `json:"models"`
+	}
+	if json.Unmarshal(body, &root) != nil {
+		return nil
+	}
+	var models []catalogModel
+	seen := map[string]bool{}
+	for _, object := range root.Models {
+		if stringField(object, "visibility") != "list" || !boolField(object, "supported_in_api") {
+			continue
+		}
+		id := stringField(object, "slug")
+		if id == "" || seen[id] || fastVariant(id) {
+			continue
+		}
+		seen[id] = true
+		models = append(models, catalogModel{ID: id, Efforts: codexEfforts(object)})
+	}
+	return models
+}
+
+func grokEfforts(object map[string]any) []string {
+	raw, _ := object["reasoning_efforts"].([]any)
+	var efforts []string
+	seen := map[string]bool{}
+	for _, item := range raw {
+		entry, _ := item.(map[string]any)
+		value := stringField(entry, "value")
+		if value == "" || seen[value] || value == "default" || value == "auto" {
+			continue
+		}
+		seen[value] = true
+		efforts = append(efforts, value)
+	}
+	return efforts
+}
+
+func codexEfforts(object map[string]any) []string {
+	raw, _ := object["supported_reasoning_levels"].([]any)
+	var efforts []string
+	seen := map[string]bool{}
+	for _, item := range raw {
+		entry, _ := item.(map[string]any)
+		value := stringField(entry, "effort")
+		if value == "" || seen[value] || value == "default" || value == "auto" {
+			continue
+		}
+		seen[value] = true
+		efforts = append(efforts, value)
+	}
+	return efforts
+}
+
+func fastVariant(id string) bool {
+	return strings.HasSuffix(id, "-fast") || strings.Contains(id, "-build-fast")
+}
+
+func stringField(object map[string]any, key string) string {
+	value, _ := object[key].(string)
+	return value
+}
+
+func boolField(object map[string]any, key string) bool {
+	value, _ := object[key].(bool)
+	return value
+}
+
+func modelIDs(models []catalogModel) []string {
+	ids := make([]string, len(models))
+	for i, model := range models {
+		ids[i] = model.ID
+	}
+	return ids
+}
+
+func effortsFor(models []catalogModel, id string) []string {
+	for _, model := range models {
+		if model.ID == id {
+			return model.Efforts
 		}
 	}
-	walk(root)
-	return ids
+	return nil
 }
