@@ -11,7 +11,7 @@ const (
 	FullAccess Mode = "full-access"
 )
 
-// Default is the mode fx uses when nothing is saved.
+// Default is the mode gx uses when nothing is saved.
 const Default = Auto
 
 // Decision is what the runner does before a tool call.
@@ -119,11 +119,11 @@ func hasPrefixWord(command, prefix string) bool {
 	}
 }
 
-// Modes is the catalog /permissions prints, in the order fx lists them.
+// Modes is the catalog /permissions prints, in the order gx lists them.
 var Modes = []struct {
 	ID, Name, Description string
 }{
 	{"auto", "Auto", "Check actions with an automatic safety review instead of asking"},
 	{"ask", "Ask", "Request permission before making any changes"},
-	{"full-access", "Full access", "Run every action without fx permission checks"},
+	{"full-access", "Full access", "Run every action without gx permission checks"},
 }

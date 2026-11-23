@@ -189,7 +189,7 @@ func TestSessionResumeOpensTranscript(t *testing.T) {
 	if !strings.Contains(out.String(), "hello resume") {
 		t.Fatal(out.String())
 	}
-	if strings.Contains(errOut.String(), "fx -r") {
+	if strings.Contains(errOut.String(), "gx -r") {
 		t.Fatal(errOut.String())
 	}
 }

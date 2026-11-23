@@ -17,7 +17,7 @@ const (
 	rail  = "\x1b[38;5;255m"
 
 	// Logo is the welcome wordmark. The mathematical italic g is this port's
-	// mark. It is not fx's 𝒇x.
+	// mark. It is not the upstream 𝒇x.
 	Logo = "\U0001D488x"
 )
 
@@ -485,7 +485,7 @@ func (t *Transcript) SetPermission(choice int, note string) error {
 }
 
 // SetPermissionAmend updates the choice, the note, and whether tab has opened
-// the "tell fx" line.
+// the "tell gx" line.
 func (t *Transcript) SetPermissionAmend(choice int, note string, amend bool) error {
 	if t.ask == nil {
 		return nil

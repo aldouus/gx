@@ -233,7 +233,7 @@ func (g generation) command(userCmd string) (string, []string, []string) {
 	}
 	script := strings.Join(parts, "\n")
 	env := append([]string{}, g.env...)
-	env = append(env, "AI_AGENT=fx")
+	env = append(env, "AI_AGENT=gx")
 	base := strings.ToLower(filepath.Base(g.shell))
 	switch {
 	case strings.Contains(base, "zsh"):

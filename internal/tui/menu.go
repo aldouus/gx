@@ -60,12 +60,16 @@ func DecideMenu(in io.Reader, n int, paint func(int) error) (int, error) {
 				if n > 1 {
 					choice = 1
 				}
+			case '3':
+				if n > 2 {
+					choice = 2
+				}
 			case '\r', '\n':
 				return choice, nil
 			case 3:
 				return -1, nil
 			}
-			if paint != nil && (b == '1' || b == '2') {
+			if paint != nil && (b == '1' || b == '2' || b == '3') {
 				_ = paint(choice)
 			}
 		}

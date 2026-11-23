@@ -1,4 +1,4 @@
-// Package cli parses argv for the fx binary.
+// Package cli parses argv for the gx binary.
 package cli
 
 import (
@@ -68,7 +68,7 @@ func Parse(args []string) (Invocation, error) {
 		}
 		val := func() (string, error) {
 			if i+1 >= len(args) {
-				return "", &UsageError{Code: 2, Msg: "fx: missing value for " + a}
+				return "", &UsageError{Code: 2, Msg: "gx: missing value for " + a}
 			}
 			i++
 			return args[i], nil
@@ -152,10 +152,10 @@ func Parse(args []string) (Invocation, error) {
 			}
 			n, err := fmt.Sscanf(s, "%d", &inv.TimeoutSec)
 			if err != nil || n != 1 {
-				return Invocation{}, &UsageError{Code: 2, Msg: "fx: timeout wants seconds"}
+				return Invocation{}, &UsageError{Code: 2, Msg: "gx: timeout wants seconds"}
 			}
 		default:
-			return Invocation{}, &UsageError{Code: 2, Msg: "fx: unknown flag " + a + "\n" + shortUsage()}
+			return Invocation{}, &UsageError{Code: 2, Msg: "gx: unknown flag " + a + "\n" + shortUsage()}
 		}
 	}
 	if inv.ShowVersion {
@@ -180,22 +180,22 @@ func Parse(args []string) (Invocation, error) {
 }
 
 func shortUsage() string {
-	return "usage: fx [--model <id>] [--permission-mode <mode>] [--ask|--auto|--full-access] [--profile <name>] [-c|--continue] [-r|--resume [last|<id>]] <command>"
+	return "usage: gx [--model <id>] [--permission-mode <mode>] [--ask|--auto|--full-access] [--profile <name>] [-c|--continue] [-r|--resume [last|<id>]] <command>"
 }
 
 // HelpText is the top-level help a person reads.
 func HelpText() string {
 	return strings.TrimSpace(`
-fx `+Version+`
+gx `+Version+`
 Fast, native coding agent for the terminal.
 
-fx starts an interactive session by default. Use `+"`fx ask`"+` to run one
+gx starts an interactive session by default. Use `+"`gx ask`"+` to run one
 noninteractive request.
 
 Usage:
-  fx [flags]
-  fx [flags] "<prompt>"
-  fx <command> [...flags] [...args]
+  gx [flags]
+  gx [flags] "<prompt>"
+  gx <command> [...flags] [...args]
 
 Commands:
   ask <prompt>                  Run one noninteractive request
@@ -206,11 +206,11 @@ Commands:
   provider                      Show the active model provider
   models                        List the configured model
   status                        Show configuration and runtime information
-  doctor                        Check that fx can work here
+  doctor                        Check that gx can work here
   mcp                           Manage MCP servers
   permissions                   Show the permission mode
   workspace                     Show workspace directories
-  config                        Show and change fx settings
+  config                        Show and change gx settings
   help                          Show this help
 
 Flags:
@@ -224,35 +224,35 @@ Flags:
   -r, --resume [last|<id>]      Resume the latest session or an exact id
   --image PATH                  Attach an image file
   -h, --help                    Display this help and exit
-  -v, --version                 Print the fx version and exit
+  -v, --version                 Print the gx version and exit
 
 Examples:
-  fx
+  gx
       Start a fresh interactive session
 
-  fx ask "Explain the changes in this repository"
+  gx ask "Explain the changes in this repository"
       Run one request and exit
 
-  fx session resume last
+  gx session resume last
       Continue the latest session for this workspace
 
-  fx status --json
+  gx status --json
       Inspect the current configuration as JSON
 
-Run `+"`fx <command> --help`"+` for command-specific usage.
+Run `+"`gx <command> --help`"+` for command-specific usage.
 Run `+"`/help`"+` inside an interactive session for slash commands.
 `) + "\n"
 }
 
-// AskHelp is fx ask --help.
+// AskHelp is gx ask --help.
 func AskHelp() string {
 	return strings.TrimSpace(`
-fx ask
+gx ask
 
 Run one noninteractive request
 
 Usage:
-  fx ask [--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--json] [--quiet] [--system TEXT] [--image PATH] [--resume <last|<id>>] [--] <prompt>
+  gx ask [--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--json] [--quiet] [--system TEXT] [--image PATH] [--resume <last|<id>>] [--] <prompt>
 
 The prompt may be passed as arguments or piped on stdin when no prompt args are given.
 Operational progress and diagnostics are written to stderr.
@@ -286,8 +286,8 @@ var SlashCommands = []Slash{
 	{"fast", "Turn fast mode on or off"},
 	{"settings", "Show settings"},
 	{"statusline", "Toggle footer segments"},
-	{"launch", "Start another fx instance"},
-	{"close", "Close this fx instance"},
+	{"launch", "Start another gx instance"},
+	{"close", "Close this gx instance"},
 	{"mcp", "List, show, add, remove, log in, or approve MCP servers"},
 	{"agents", "List subagents"},
 	{"status", "Show the model, permission mode, and workspace"},
@@ -297,7 +297,7 @@ var SlashCommands = []Slash{
 	{"logout", "Sign out of codex or grok"},
 	{"image", "Attach an image to the next prompt"},
 	{"images", "List or clear pending images"},
-	{"version", "Show the fx version"},
+	{"version", "Show the gx version"},
 	{"quit", "Exit"},
 	{"exit", "Exit"},
 }

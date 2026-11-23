@@ -1,6 +1,6 @@
 // Package subagent runs a child beside its parent and reports back on a channel.
 //
-// The report rules follow fx. final, the default, reports once when the work
+// The report rules follow the upstream tool. final, the default, reports once when the work
 // ends. every_turn also forwards each emit the runner makes along the way.
 // never reports only when the work fails. Failures always report.
 //

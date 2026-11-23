@@ -103,7 +103,7 @@ func (t shellTool) run(ctx context.Context, command, cwd, profile string, yieldM
 	}
 	shell := resolveShell()
 	var args []string
-	env := append(os.Environ(), "AI_AGENT=fx")
+	env := append(os.Environ(), "AI_AGENT=gx")
 	if profile == "clean" {
 		args = cleanArgs(shell, command)
 	} else {
@@ -396,7 +396,7 @@ func (fetchTool) Run(ctx context.Context, args json.RawMessage) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "fx")
+	req.Header.Set("User-Agent", "gx")
 	client := &http.Client{Timeout: 20 * time.Second}
 	res, err := client.Do(req)
 	if err != nil {

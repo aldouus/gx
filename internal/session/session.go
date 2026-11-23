@@ -553,7 +553,7 @@ func (s *Session) Close() error {
 }
 
 // Abandon drops the lock without closing the turn. Tests use it to simulate
-// a crash. A person running fx does not.
+// a crash. A person running gx does not.
 func (s *Session) Abandon() error {
 	s.open = false
 	var err error
@@ -677,7 +677,7 @@ func List(root string) ([]string, error) {
 	return out, nil
 }
 
-// Remember stores the interactive session id for fx -c.
+// Remember stores the interactive session id for gx -c.
 func Remember(root, id string) error {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return err
@@ -685,7 +685,7 @@ func Remember(root, id string) error {
 	return os.WriteFile(filepath.Join(root, "last_interactive"), []byte(id+"\n"), 0o600)
 }
 
-// Remembered reads the id fx -c resumes.
+// Remembered reads the id gx -c resumes.
 func Remembered(root string) (string, error) {
 	b, err := os.ReadFile(filepath.Join(root, "last_interactive"))
 	if errors.Is(err, os.ErrNotExist) {

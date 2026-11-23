@@ -161,7 +161,7 @@ func isLoopbackHTTP(raw string) bool {
 
 // Login binds 127.0.0.1 on an ephemeral port, prints the authorize URL to out,
 // and waits until the browser hits the redirect or ctx ends. The caller owns
-// the deadline (fx waits five minutes). The code is exchanged and the
+// the deadline (gx waits five minutes). The code is exchanged and the
 // credential is saved under root.
 func Login(ctx context.Context, root, provider string, out io.Writer) (Credential, error) {
 	if err := ctx.Err(); err != nil {

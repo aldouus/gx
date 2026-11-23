@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// Settings is the on-disk configuration a person edits with fx config.
+// Settings is the on-disk configuration a person edits with gx config.
 type Settings struct {
 	Model          string   `json:"model,omitempty"`
 	PermissionMode string   `json:"permission_mode,omitempty"`
@@ -100,7 +100,7 @@ func Save(home string, f File) error {
 	return os.WriteFile(settingsPath(home), b, 0o600)
 }
 
-// Project is the repo-safe subset of .fx.json.
+// Project is the repo-safe subset of .gx.json.
 type Project struct {
 	Context            string   `json:"context,omitempty"`
 	MaxAgentSteps      int      `json:"max_agent_steps,omitempty"`
@@ -109,14 +109,17 @@ type Project struct {
 	ProviderStrict     bool     `json:"provider_strict,omitempty"`
 }
 
-// LoadProject reads <workspace>/.fx.json. A missing file is empty, not an error.
-// Keys outside the repo-safe set are ignored.
+// LoadProject reads <workspace>/.gx.json, then .fx.json if that is missing.
+// A missing file is empty, not an error. Keys outside the repo-safe set are ignored.
 func LoadProject(workspace string) (Project, error) {
 	var p Project
 	if workspace == "" {
 		return p, nil
 	}
-	b, err := os.ReadFile(filepath.Join(workspace, ".fx.json"))
+	b, err := os.ReadFile(filepath.Join(workspace, ".gx.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		b, err = os.ReadFile(filepath.Join(workspace, ".fx.json"))
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return p, nil
 	}

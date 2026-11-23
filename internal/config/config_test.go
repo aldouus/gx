@@ -85,7 +85,7 @@ func TestProfileAndAgents(t *testing.T) {
 	if p.Model != "writer-model" || p.Prompt != "write clearly" {
 		t.Fatalf("%+v", p)
 	}
-	if err := os.WriteFile(filepath.Join(ws, ".fx.json"), []byte(`{"context":"repo context","max_agent_steps":3,"model":"nope"}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(ws, ".gx.json"), []byte(`{"context":"repo context","max_agent_steps":3,"model":"nope"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	proj, err := LoadProject(ws)

@@ -1,4 +1,4 @@
-// Package app wires the fx command to the agent, the session, and the terminal.
+// Package app wires the gx command to the agent, the session, and the terminal.
 package app
 
 import (
@@ -33,7 +33,7 @@ import (
 
 var errQuit = errors.New("quit")
 
-// Run executes one fx invocation. args do not include argv0.
+// Run executes one gx invocation. args do not include argv0.
 func Run(args []string, in io.Reader, out, errOut io.Writer) int {
 	inv, err := cli.Parse(args)
 	if err != nil {
@@ -107,7 +107,7 @@ func Run(args []string, in io.Reader, out, errOut io.Writer) int {
 			name = inv.Args[0]
 		}
 		if name == "vercel" {
-			fmt.Fprintln(errOut, "fx: vercel login is not part of this port")
+			fmt.Fprintln(errOut, "gx: vercel login is not part of this port")
 			return 1
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -134,7 +134,7 @@ func Run(args []string, in io.Reader, out, errOut io.Writer) int {
 	case "interactive":
 		return runInteractive(inv, settings, home, cwd, in, out, errOut)
 	default:
-		fmt.Fprintf(errOut, "fx: unknown command %s\n", inv.Command)
+		fmt.Fprintf(errOut, "gx: unknown command %s\n", inv.Command)
 		return 2
 	}
 }
@@ -205,7 +205,7 @@ func doctor(out, errOut io.Writer, home string) int {
 		fmt.Fprintf(out, "%s: signed in\n", name)
 	}
 	if !ok {
-		fmt.Fprintln(errOut, "fx doctor: problems found")
+		fmt.Fprintln(errOut, "gx doctor: problems found")
 		return 1
 	}
 	return 0
@@ -280,7 +280,7 @@ func openSessionTranscript(out, errOut io.Writer, home, id string) int {
 	if id == "" || id == "last" {
 		ids, err := session.List(home)
 		if err != nil || len(ids) == 0 {
-			fmt.Fprintln(errOut, "fx: no session")
+			fmt.Fprintln(errOut, "gx: no session")
 			return 1
 		}
 		id = ids[0]
@@ -306,14 +306,14 @@ func configCommand(out, errOut io.Writer, home string, settings config.File, arg
 	switch args[0] {
 	case "get":
 		if len(args) < 2 {
-			fmt.Fprintln(errOut, "fx config get <key>")
+			fmt.Fprintln(errOut, "gx config get <key>")
 			return 2
 		}
 		fmt.Fprintln(out, settingGet(settings, args[1]))
 		return 0
 	case "set":
 		if len(args) < 3 {
-			fmt.Fprintln(errOut, "fx config set <key> <value>")
+			fmt.Fprintln(errOut, "gx config set <key> <value>")
 			return 2
 		}
 		if err := settingSet(&settings, args[1], strings.Join(args[2:], " ")); err != nil {
@@ -326,7 +326,7 @@ func configCommand(out, errOut io.Writer, home string, settings config.File, arg
 		}
 		return 0
 	default:
-		fmt.Fprintln(errOut, "fx config: get or set")
+		fmt.Fprintln(errOut, "gx config: get or set")
 		return 2
 	}
 }
@@ -376,7 +376,7 @@ func runAsk(ctx context.Context, inv cli.Invocation, settings config.File, home,
 		prompt = strings.TrimSpace(string(b))
 	}
 	if prompt == "" {
-		fmt.Fprintln(errOut, "fx ask: missing prompt")
+		fmt.Fprintln(errOut, "gx ask: missing prompt")
 		fmt.Fprintln(errOut, strings.TrimSpace(cli.AskHelp()))
 		return 2
 	}
@@ -724,7 +724,7 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 
 func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, in io.Reader, out, errOut io.Writer) int {
 	if !tui.IsTerminal(tui.StdinFD()) || !tui.IsTerminal(tui.StdoutFD()) {
-		fmt.Fprintln(errOut, "fx requires an interactive terminal (TTY).")
+		fmt.Fprintln(errOut, "gx requires an interactive terminal (TTY).")
 		return 1
 	}
 	restore, err := tui.EnterRaw(tui.StdinFD())
@@ -863,15 +863,7 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 			}
 			return tr.User(strings.TrimRight(b.String(), "\n"))
 		case "permissions":
-			if rest != "" {
-				if _, ok := perm.Parse(rest); !ok {
-					return tr.User("permission mode is ask, auto, or full-access")
-				}
-				settings.PermissionMode = rest
-				_ = config.Save(home, *settings)
-				tr.SetStatus(inv.Model, rest, signedIn(home))
-			}
-			return tr.User("permission mode " + settings.PermissionMode)
+			return permissionSlash(home, rest, tr, settings)
 		case "model":
 			return modelSlash(home, rest, tr, inv, settings)
 		case "clear", "new", "reset":
@@ -1080,13 +1072,13 @@ func pickProvider(inv cli.Invocation, settings config.File, home, model, origin 
 			return subscriptionProvider(home, candidate, model, origin)
 		}
 	}
-	return nil, model, fmt.Errorf("no API key. Set OPENAI_API_KEY or run fx login")
+	return nil, model, fmt.Errorf("no API key. Set OPENAI_API_KEY or run gx login")
 }
 
 func subscriptionProvider(home, name, model, origin string) (provider.Provider, string, error) {
 	cred, err := auth.Load(home, name)
 	if err != nil {
-		return nil, model, fmt.Errorf("no %s login. Run fx login %s", name, name)
+		return nil, model, fmt.Errorf("no %s login. Run gx login %s", name, name)
 	}
 	if origin == "default" {
 		if name == "grok" {
@@ -1602,6 +1594,46 @@ func serviceTier(settings config.File) string {
 		return "priority"
 	}
 	return ""
+}
+
+func permissionSlash(home, rest string, tr *tui.Transcript, settings *config.File) error {
+	rest = strings.TrimSpace(rest)
+	if rest != "" {
+		mode, ok := perm.Parse(rest)
+		if !ok {
+			return tr.User("permission mode is ask, auto, or full-access")
+		}
+		settings.PermissionMode = string(mode)
+		_ = config.Save(home, *settings)
+		tr.SetStatus(settings.Model, settings.PermissionMode, signedIn(home))
+		return tr.User("permission mode " + settings.PermissionMode)
+	}
+	current := settings.PermissionMode
+	if current == "" {
+		current = string(perm.Default)
+	}
+	items := make([]string, len(perm.Modes))
+	for i, mode := range perm.Modes {
+		items[i] = mode.Name + "  " + mode.Description
+		if mode.ID == current {
+			items[i] += "  current"
+		}
+	}
+	if err := tr.Menu("Permissions", items); err != nil {
+		return err
+	}
+	sel, err := tui.DecideMenu(os.Stdin, len(items), tr.SetMenu)
+	_ = tr.ClearMenu()
+	if err != nil {
+		return tr.User(err.Error())
+	}
+	if sel < 0 {
+		return tr.User("permission mode " + current)
+	}
+	settings.PermissionMode = perm.Modes[sel].ID
+	_ = config.Save(home, *settings)
+	tr.SetStatus(settings.Model, settings.PermissionMode, signedIn(home))
+	return tr.User("permission mode " + settings.PermissionMode)
 }
 
 func modelSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, settings *config.File) error {
