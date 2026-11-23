@@ -20,6 +20,27 @@ func TestRuneWidths(t *testing.T) {
 	}
 }
 
+func TestRGISequenceIsOnePair(t *testing.T) {
+	// man + ZWJ + laptop, an RGI sequence. Without the trie this is 4 cells.
+	seq := "\U0001F468\u200D\U0001F4BB"
+	if got := Visible(seq); got != 2 {
+		t.Fatalf("rgi sequence = %d", got)
+	}
+	invalid := "\U0001F469\u200DA"
+	if got := Visible(invalid); got != 3 {
+		t.Fatalf("invalid zwj = %d", got)
+	}
+	if got := Visible("a\u0301"); got != 1 {
+		t.Fatalf("combining = %d", got)
+	}
+	if got := Rune(0x200D); got != 0 || Rune(0x1F3FB) != 0 || Rune(0xFE0F) != 0 {
+		t.Fatal("continuation widths")
+	}
+	if got := Visible("\u2764\uFE0F"); got != 2 {
+		t.Fatalf("fe0f = %d", got)
+	}
+}
+
 func TestANSIDoesNotCount(t *testing.T) {
 	s := "\x1b[38;5;245mauto\x1b[0m"
 	if got := String(s); got != 4 {

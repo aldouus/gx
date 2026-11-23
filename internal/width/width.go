@@ -44,6 +44,52 @@ func Rune(r rune) int {
 	return 1
 }
 
+func matchRGI(s string, i int) int {
+	node := uint32(0)
+	cursor := i
+	longest := 0
+	for depth := 0; cursor < len(s) && depth < 10; depth++ {
+		r, size := utf8.DecodeRuneInString(s[cursor:])
+		if r == utf8.RuneError && size == 1 {
+			break
+		}
+		next, ok := rgiChild(node, r)
+		if !ok {
+			break
+		}
+		node = next
+		cursor += size
+		if int(node) < len(rgiNodes) && rgiNodes[node].term {
+			longest = cursor - i
+		}
+	}
+	return longest
+}
+
+func rgiChild(node uint32, cp rune) (uint32, bool) {
+	if int(node) >= len(rgiNodes) {
+		return 0, false
+	}
+	n := rgiNodes[node]
+	low := int(n.start)
+	high := low + int(n.n)
+	if high > len(rgiEdges) {
+		high = len(rgiEdges)
+	}
+	for low < high {
+		mid := low + (high-low)/2
+		edge := rgiEdges[mid]
+		if cp < edge.cp {
+			high = mid
+		} else if cp > edge.cp {
+			low = mid + 1
+		} else {
+			return uint32(mid + 1), true
+		}
+	}
+	return 0, false
+}
+
 func inRanges(r rune, ranges [][2]rune) bool {
 	i := sort.Search(len(ranges), func(i int) bool { return ranges[i][1] >= r })
 	if i >= len(ranges) {
@@ -78,6 +124,9 @@ func measure(s string, skipANSI bool) int {
 func unitAt(s string, i int) (byteLen, cells int) {
 	if i >= len(s) {
 		return 0, 0
+	}
+	if n := matchRGI(s, i); n > 0 {
+		return n, 2
 	}
 	r, size := utf8.DecodeRuneInString(s[i:])
 	if r == utf8.RuneError && size == 1 {
