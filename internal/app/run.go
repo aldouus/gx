@@ -111,7 +111,7 @@ func Run(args []string, in io.Reader, out, errOut io.Writer) int {
 			fmt.Fprintln(errOut, err)
 			return 1
 		}
-		fmt.Fprintf(out, "signed in to %s\n", name)
+		fmt.Fprintf(out, "%s\n", signedInText(name))
 		return 0
 	case "logout":
 		name := "codex"
@@ -191,6 +191,14 @@ func doctor(out, errOut io.Writer, home string) int {
 	} else {
 		fmt.Fprintln(out, "openai: key is set")
 	}
+	for _, name := range []string{"codex", "grok"} {
+		cred, err := auth.Load(home, name)
+		if err != nil || cred.AccessToken == "" {
+			fmt.Fprintf(out, "%s: not signed in\n", name)
+			continue
+		}
+		fmt.Fprintf(out, "%s: signed in\n", name)
+	}
 	if !ok {
 		fmt.Fprintln(errOut, "fx doctor: problems found")
 		return 1
@@ -229,16 +237,29 @@ func listSessions(out, errOut io.Writer, home string) int {
 	return 0
 }
 
+func signedInText(name string) string {
+	if name == "" {
+		name = "codex"
+	}
+	return "Signed in with " + strings.ToUpper(name[:1]) + name[1:] + "."
+}
+
 func sessionCommand(out, errOut io.Writer, home string, args []string) int {
 	if len(args) == 0 {
 		return listSessions(out, errOut, home)
 	}
 	if args[0] == "resume" {
-		fmt.Fprintln(errOut, "fx session resume opens the interactive terminal. Run fx -r inside a terminal.")
-		return 1
+		id := "last"
+		if len(args) > 1 {
+			id = args[1]
+		}
+		return openSessionTranscript(out, errOut, home, id)
 	}
-	id := args[0]
-	if id == "last" {
+	return openSessionTranscript(out, errOut, home, args[0])
+}
+
+func openSessionTranscript(out, errOut io.Writer, home, id string) int {
+	if id == "" || id == "last" {
 		ids, err := session.List(home)
 		if err != nil || len(ids) == 0 {
 			fmt.Fprintln(errOut, "fx: no session")
@@ -251,8 +272,10 @@ func sessionCommand(out, errOut io.Writer, home string, args []string) int {
 		fmt.Fprintln(errOut, err)
 		return 1
 	}
-	defer s.Close()
-	fmt.Fprint(out, s.TranscriptText())
+	text := s.TranscriptText()
+	_ = s.Close()
+	_ = session.Remember(home, id)
+	fmt.Fprint(out, text)
 	return 0
 }
 
@@ -1020,7 +1043,7 @@ func loginSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, setti
 		mode = string(perm.Default)
 	}
 	tr.SetStatus(model, mode, signedIn(home))
-	return tr.User("signed in to " + name)
+	return tr.User(signedInText(name))
 }
 
 func logoutSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, settings config.File) error {
