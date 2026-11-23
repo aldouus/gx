@@ -69,6 +69,7 @@ type Transcript struct {
 	fast          bool
 	vim           bool
 	vimMode       string
+	anchor        int
 	cursorShape   string
 
 	busyAt   time.Time
@@ -255,7 +256,8 @@ func (t *Transcript) leaveTranscript() {
 }
 
 // SetVim records whether vim keys are on and which mode the composer is in.
-func (t *Transcript) SetVim(on bool, mode string) {
+// anchor is the visual-mode selection start.
+func (t *Transcript) SetVim(on bool, mode string, anchor int) {
 	if t == nil {
 		return
 	}
@@ -264,6 +266,7 @@ func (t *Transcript) SetVim(on bool, mode string) {
 		mode = "insert"
 	}
 	t.vimMode = mode
+	t.anchor = anchor
 }
 
 func (t *Transcript) SetInput(line string, cursor int) {
@@ -869,6 +872,9 @@ func (t *Transcript) inputRow() string {
 	if t.vim && t.vimMode == "insert" {
 		return composerMark + shown
 	}
+	if t.vim && t.vimMode == "visual" {
+		return composerMark + highlightRange(shown, t.anchor, cur)
+	}
 	if t.vim {
 		return composerMark + blockAt(shown, cur)
 	}
@@ -901,6 +907,29 @@ func justifyStatus(left, right string, cols int) string {
 		gap = 1
 	}
 	return dim + left + reset + strings.Repeat(" ", gap) + right
+}
+
+func highlightRange(s string, anchor, pos int) string {
+	if anchor > pos {
+		anchor, pos = pos, anchor
+	}
+	if anchor < 0 {
+		anchor = 0
+	}
+	if pos < len(s) {
+		_, size := utf8.DecodeRuneInString(s[pos:])
+		pos += size
+	}
+	if pos > len(s) {
+		pos = len(s)
+	}
+	if anchor > len(s) {
+		anchor = len(s)
+	}
+	if anchor >= pos {
+		return blockAt(s, anchor)
+	}
+	return s[:anchor] + "\x1b[7m" + s[anchor:pos] + "\x1b[0m" + s[pos:]
 }
 
 func blockAt(s string, pos int) string {

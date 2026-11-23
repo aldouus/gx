@@ -131,11 +131,41 @@ func TestVimNormalDeletesUnderCursor(t *testing.T) {
 	}
 }
 
+func TestVimUndoRedoAndVisualHighlight(t *testing.T) {
+	var c Composer
+	c.Vim = true
+	c.Mode = "insert"
+	c.Feed([]byte("hello"))
+	c.pending = []byte{0x1b}
+	c.FinishEsc()
+	c.Feed([]byte("x"))
+	if c.Line != "hell" {
+		t.Fatalf("delete %q", c.Line)
+	}
+	c.Feed([]byte("u"))
+	if c.Line != "hello" {
+		t.Fatalf("undo %q", c.Line)
+	}
+	c.Feed([]byte{18})
+	if c.Line != "hell" {
+		t.Fatalf("redo %q", c.Line)
+	}
+	c.Pos = 0
+	c.Feed([]byte("vll"))
+	if c.Mode != "visual" {
+		t.Fatalf("mode %s", c.Mode)
+	}
+	got := highlightRange(c.Line, c.Anchor, c.Pos)
+	if !strings.Contains(got, "\x1b[7mhel") && !strings.Contains(got, "\x1b[7mhe") {
+		t.Fatalf("highlight %q anchor %d pos %d", got, c.Anchor, c.Pos)
+	}
+}
+
 func TestStatusVimIndicator(t *testing.T) {
 	var buf bytes.Buffer
 	tr := NewTranscript(&buf, 40)
 	tr.SetStatus("grok", "auto", true)
-	tr.SetVim(true, "normal")
+	tr.SetVim(true, "normal", 0)
 	tr.SetInput("hi", 1)
 	if err := tr.Paint(); err != nil {
 		t.Fatal(err)

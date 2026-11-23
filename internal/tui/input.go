@@ -17,6 +17,9 @@ type Composer struct {
 	Vim     bool
 	Mode    string
 	Anchor  int
+	editing bool
+	undo    []edit
+	redo    []edit
 	History []string
 	hist    int
 	pending []byte
@@ -123,6 +126,12 @@ func (c *Composer) Feed(b []byte) Action {
 			c.disarm()
 			c.deleteWordBack()
 			act.Redraw = true
+		case 18: // ctrl+r
+			b = b[1:]
+			if c.commandMode() {
+				c.redoEdit()
+				act.Redraw = true
+			}
 		case '\t':
 			b = b[1:]
 			c.disarm()
@@ -179,6 +188,7 @@ func (c *Composer) deleteBack() {
 	if c.Pos == 0 {
 		return
 	}
+	c.beforeChange()
 	_, size := decodeLast(c.Line[:c.Pos])
 	c.Line = c.Line[:c.Pos-size] + c.Line[c.Pos:]
 	c.Pos -= size
@@ -188,6 +198,7 @@ func (c *Composer) deleteForward() {
 	if c.Pos >= len(c.Line) {
 		return
 	}
+	c.beforeChange()
 	_, size := decode([]byte(c.Line[c.Pos:]))
 	c.Line = c.Line[:c.Pos] + c.Line[c.Pos+size:]
 }
@@ -268,12 +279,14 @@ func (c *Composer) commandMode() bool {
 
 func (c *Composer) enterNormal() {
 	c.Mode = "normal"
+	c.editing = false
 	if c.Pos > 0 && c.Pos >= len(c.Line) {
 		c.move(-1)
 	}
 }
 
 func (c *Composer) insert(r rune) {
+	c.beforeChange()
 	s := string(r)
 	c.Line = c.Line[:c.Pos] + s + c.Line[c.Pos:]
 	c.Pos += len(s)
@@ -310,6 +323,8 @@ func (c *Composer) vimKey(r rune) {
 	case 'A':
 		c.Pos = len(c.Line)
 		c.Mode = "insert"
+	case 'u':
+		c.undoEdit()
 	case 'x':
 		if c.Mode == "visual" {
 			c.deleteSelection()
@@ -321,12 +336,14 @@ func (c *Composer) vimKey(r rune) {
 	case 'd', 'D':
 		if c.Mode == "visual" || r == 'D' {
 			if r == 'D' && c.Mode != "visual" {
+				c.beforeChange()
 				c.Line = c.Line[:c.Pos]
 				return
 			}
 			c.deleteSelection()
 			return
 		}
+		c.beforeChange()
 		c.Line = ""
 		c.Pos = 0
 	case 'v':
@@ -348,7 +365,62 @@ func (c *Composer) vimKey(r rune) {
 	}
 }
 
+type edit struct {
+	line string
+	pos  int
+}
+
+func (c *Composer) beforeChange() {
+	if !c.Vim {
+		return
+	}
+	if c.Mode == "insert" || c.Mode == "" {
+		if c.editing {
+			return
+		}
+		c.remember()
+		c.editing = true
+		return
+	}
+	c.remember()
+}
+
+func (c *Composer) remember() {
+	c.undo = append(c.undo, edit{line: c.Line, pos: c.Pos})
+	c.redo = nil
+	if len(c.undo) > 100 {
+		c.undo = c.undo[1:]
+	}
+}
+
+func (c *Composer) undoEdit() {
+	if len(c.undo) == 0 {
+		return
+	}
+	c.redo = append(c.redo, edit{line: c.Line, pos: c.Pos})
+	last := c.undo[len(c.undo)-1]
+	c.undo = c.undo[:len(c.undo)-1]
+	c.Line = last.line
+	c.Pos = last.pos
+	c.editing = false
+	c.Mode = "normal"
+}
+
+func (c *Composer) redoEdit() {
+	if len(c.redo) == 0 {
+		return
+	}
+	c.undo = append(c.undo, edit{line: c.Line, pos: c.Pos})
+	next := c.redo[len(c.redo)-1]
+	c.redo = c.redo[:len(c.redo)-1]
+	c.Line = next.line
+	c.Pos = next.pos
+	c.editing = false
+	c.Mode = "normal"
+}
+
 func (c *Composer) deleteSelection() {
+	c.beforeChange()
 	a, b := c.Anchor, c.Pos
 	if a > b {
 		a, b = b, a
@@ -372,6 +444,7 @@ func (c *Composer) deleteWordBack() {
 	if c.Pos == 0 {
 		return
 	}
+	c.beforeChange()
 	i := c.Pos
 	for i > 0 {
 		r, size := decodeLast(c.Line[:i])

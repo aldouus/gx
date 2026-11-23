@@ -763,7 +763,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 	if comp.Vim {
 		comp.Mode = "insert"
 	}
-	tr.SetVim(comp.Vim, comp.Mode)
+	tr.SetVim(comp.Vim, comp.Mode, comp.Anchor)
 	slashSel := 0
 	slashClosed := false
 	slashLine := ""
@@ -845,7 +845,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 		if !settings.Vim {
 			comp.Mode = ""
 		}
-		tr.SetVim(comp.Vim, comp.Mode)
+		tr.SetVim(comp.Vim, comp.Mode, comp.Anchor)
 		tr.SetInput(comp.Line, comp.Pos)
 		if act.Submit != "" {
 			tr.SetCompletions(nil, 0)
