@@ -141,7 +141,7 @@ func TestStatusVimIndicator(t *testing.T) {
 		t.Fatal(err)
 	}
 	plain := strip(buf.String())
-	if !strings.Contains(plain, "NORMAL") || !strings.HasSuffix(strings.TrimRight(plain, "\n"), "NORMAL") && !strings.Contains(plain, "NORMAL") {
+	if !strings.Contains(plain, "normal") {
 		t.Fatal(plain)
 	}
 	if strings.Contains(plain, "esc esc") {

@@ -878,11 +878,11 @@ func (t *Transcript) inputRow() string {
 func vimLabel(mode string) string {
 	switch mode {
 	case "normal":
-		return "NORMAL"
+		return "normal"
 	case "visual":
-		return "VISUAL"
+		return "visual"
 	default:
-		return "INSERT"
+		return "insert"
 	}
 }
 
@@ -972,7 +972,11 @@ func (t *Transcript) hintRow() string {
 	if right == "" {
 		return dim + width.Clip(text, t.cols) + reset
 	}
-	return justifyStatus(text, right, t.cols)
+	cols := t.cols - 1
+	if cols < 1 {
+		cols = 1
+	}
+	return justifyStatus(text, right, cols)
 }
 
 func tighten(s string) string {
