@@ -53,6 +53,25 @@ func TestTranscriptOrderAndDiff(t *testing.T) {
 	}
 }
 
+func TestComposerRepaintDoesNotStack(t *testing.T) {
+	var buf bytes.Buffer
+	s := NewScreen(&buf)
+	if err := s.Paint(Frame{Rows: []string{"┃ h", "hint"}, CursorRow: 0, CursorCol: 4}); err != nil {
+		t.Fatal(err)
+	}
+	before := buf.Len()
+	if err := s.Paint(Frame{Rows: []string{"┃ he", "hint"}, CursorRow: 0, CursorCol: 5}); err != nil {
+		t.Fatal(err)
+	}
+	tail := buf.String()[before:]
+	if strings.Contains(tail, "\n") || strings.Contains(tail, "\x1b[1E") {
+		t.Fatalf("repaint scrolled a new prompt line: %q", tail)
+	}
+	if !strings.Contains(tail, "┃ he") {
+		t.Fatalf("new composer missing: %q", tail)
+	}
+}
+
 func TestUnchangedFrameRowIsNotRewritten(t *testing.T) {
 	var buf bytes.Buffer
 	s := NewScreen(&buf)

@@ -7,11 +7,14 @@ import (
 )
 
 // Screen paints a live frame under scrollback. Committed lines are written
-// once. Later paints rewrite only the frame.
+// once. Later paints rewrite only the frame, from the row the cursor was
+// left on. Newlines are not used inside the frame: a newline on the last
+// screen row scrolls, which stacks a new prompt on every keystroke.
 type Screen struct {
-	out    io.Writer
-	height int
-	prev   []string
+	out       io.Writer
+	height    int
+	cursorRow int
+	prev      []string
 }
 
 func NewScreen(out io.Writer) *Screen { return &Screen{out: out} }
@@ -30,6 +33,10 @@ func (s *Screen) Release(n int) {
 	}
 	s.prev = append([]string(nil), s.prev[n:]...)
 	s.height -= n
+	s.cursorRow -= n
+	if s.cursorRow < 0 {
+		s.cursorRow = 0
+	}
 }
 
 // Commit writes lines into scrollback and drops the frame.
@@ -39,12 +46,7 @@ func (s *Screen) Commit(lines []string) error {
 	}
 	var b strings.Builder
 	b.WriteString("\x1b[?2026h")
-	if s.height > 1 {
-		fmt.Fprintf(&b, "\x1b[%dA", s.height-1)
-	}
-	if s.height > 0 {
-		b.WriteByte('\r')
-	}
+	s.moveHome(&b)
 	for _, line := range lines {
 		b.WriteString(line)
 		b.WriteString("\x1b[K\r\n")
@@ -53,19 +55,25 @@ func (s *Screen) Commit(lines []string) error {
 		for i := 0; i < extra; i++ {
 			b.WriteString("\x1b[K")
 			if i+1 < extra {
-				b.WriteString("\x1b[1E")
+				b.WriteString("\x1b[1B\r")
 			}
 		}
-		if extra > 1 {
-			fmt.Fprintf(&b, "\x1b[%dA", extra-1)
-		}
-		b.WriteByte('\r')
 	}
 	b.WriteString("\x1b[?2026l")
 	s.height = 0
+	s.cursorRow = 0
 	s.prev = nil
 	_, err := io.WriteString(s.out, b.String())
 	return err
+}
+
+func (s *Screen) moveHome(b *strings.Builder) {
+	if s.cursorRow > 0 {
+		fmt.Fprintf(b, "\x1b[%dA", s.cursorRow)
+	}
+	if s.height > 0 || s.cursorRow > 0 {
+		b.WriteByte('\r')
+	}
 }
 
 // Frame is the live rows and where the cursor sits inside them.
@@ -75,25 +83,44 @@ type Frame struct {
 	CursorCol int
 }
 
-// Paint diffs the frame. Unchanged rows are not rewritten.
+// Paint diffs the frame. Unchanged rows are not rewritten. Movement inside
+// the frame uses cursor up/down, never a newline, so the last screen row
+// cannot scroll a new prompt into place.
 func (s *Screen) Paint(frame Frame) error {
 	rows := frame.Rows
+	n := len(rows)
 	var b strings.Builder
 	b.WriteString("\x1b[?2026h")
-	if s.height > 1 {
-		fmt.Fprintf(&b, "\x1b[%dA", s.height-1)
-	}
-	if s.height > 0 {
+	if s.height == 0 {
+		if n > 1 {
+			for i := 1; i < n; i++ {
+				b.WriteString("\r\n")
+			}
+			fmt.Fprintf(&b, "\x1b[%dA", n-1)
+		}
 		b.WriteByte('\r')
+	} else {
+		s.moveHome(&b)
+		if n > s.height {
+			if s.height > 1 {
+				fmt.Fprintf(&b, "\x1b[%dB", s.height-1)
+			}
+			for i := s.height; i < n; i++ {
+				b.WriteString("\r\n")
+			}
+			if n > 1 {
+				fmt.Fprintf(&b, "\x1b[%dA", n-1)
+			}
+			b.WriteByte('\r')
+		}
 	}
-	n := len(rows)
 	limit := n
 	if s.height > limit {
 		limit = s.height
 	}
 	for i := 0; i < limit; i++ {
 		if i > 0 {
-			b.WriteString("\x1b[1E")
+			b.WriteString("\x1b[1B\r")
 		}
 		if i < n {
 			if i >= len(s.prev) || s.prev[i] != rows[i] {
@@ -104,35 +131,34 @@ func (s *Screen) Paint(frame Frame) error {
 			b.WriteString("\x1b[K")
 		}
 	}
-	if n > 0 && n < s.height {
-		up := s.height - n
-		if limit-1 > n-1 {
-			fmt.Fprintf(&b, "\x1b[%dA", limit-n)
-		}
-		_ = up
+	dest := frame.CursorRow
+	if n == 0 {
+		dest = 0
+	} else if dest < 0 {
+		dest = 0
+	} else if dest >= n {
+		dest = n - 1
+	}
+	from := 0
+	if limit > 0 {
+		from = limit - 1
+	}
+	if from > dest {
+		fmt.Fprintf(&b, "\x1b[%dA", from-dest)
+	} else if dest > from {
+		fmt.Fprintf(&b, "\x1b[%dB", dest-from)
+	}
+	col := frame.CursorCol
+	if col < 1 {
+		col = 1
 	}
 	if n > 0 {
-		// Cursor is on the last painted row. Move to the composer.
-		from := limit - 1
-		if n < s.height {
-			from = n - 1
-		}
-		if frame.CursorRow >= 0 && frame.CursorRow < n && from != frame.CursorRow {
-			if from > frame.CursorRow {
-				fmt.Fprintf(&b, "\x1b[%dA", from-frame.CursorRow)
-			} else {
-				fmt.Fprintf(&b, "\x1b[%dB", frame.CursorRow-from)
-			}
-		}
-		col := frame.CursorCol
-		if col < 1 {
-			col = 1
-		}
 		fmt.Fprintf(&b, "\x1b[%dG", col)
 	}
 	b.WriteString("\x1b[?2026l")
 	s.prev = append(s.prev[:0], rows...)
 	s.height = n
+	s.cursorRow = dest
 	_, err := io.WriteString(s.out, b.String())
 	return err
 }
@@ -140,6 +166,7 @@ func (s *Screen) Paint(frame Frame) error {
 // Reset forgets the live frame. The next paint starts from a clear cursor.
 func (s *Screen) Reset() {
 	s.height = 0
+	s.cursorRow = 0
 	s.prev = nil
 }
 
