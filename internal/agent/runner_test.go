@@ -269,6 +269,45 @@ func TestAutoReviewsShell(t *testing.T) {
 	_ = json.RawMessage(nil)
 }
 
+func TestSavedGrantSkipsPrompt(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	root := t.TempDir()
+	s, err := session.Create(root, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := AddGrant(ScopeWorkspace, home, dir, "shell", "printf hi"); err != nil {
+		t.Fatal(err)
+	}
+	args := `{"action":"run","command":"printf hi","profile":"clean"}`
+	prov := &script{steps: [][]provider.Delta{
+		{{Call: &provider.CallDelta{Index: 0, ID: "c1", Name: "shell", Args: args}}, {Done: true}},
+		{{Text: "ran"}, {Done: true}},
+	}}
+	r := &Runner{
+		Provider:  prov,
+		Tools:     tool.Builtin(tool.Workspace{Roots: []string{dir}}),
+		Mode:      perm.Ask,
+		Model:     "test",
+		Session:   s,
+		Home:      home,
+		Workspace: dir,
+		Approve: func(context.Context, string, string) (Verdict, string, error) {
+			t.Fatal("saved grant still prompted")
+			return Deny, "", nil
+		},
+	}
+	out, err := r.Turn(context.Background(), "go", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "ran" {
+		t.Fatal(out)
+	}
+}
+
 func TestAllowAlwaysSkipsTheNextPrompt(t *testing.T) {
 	root := t.TempDir()
 	s, err := session.Create(root, t.TempDir())

@@ -505,10 +505,9 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 		Mode:      mode,
 		Model:     model,
 		Session:   sess,
-		Inbox:     inbox,
-		Images:    inv.Images,
-		Workspace: cwd,
-		Extra:     extra,
+		Inbox:  inbox,
+		Images: inv.Images,
+		Extra:  extra,
 		Approve: func(ctx context.Context, name, detail string) (agent.Verdict, string, error) {
 			if approve != nil {
 				return approve(ctx, name, detail)
@@ -516,7 +515,9 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 			fmt.Fprintf(errOut, "Allow %s? %s\n", name, detail)
 			return agent.Deny, "", nil
 		},
-		Grants: grants,
+		Grants:    grants,
+		Home:      home,
+		Workspace: cwd,
 	}
 	reg.Add(tool.Subagent(&subagents{home: home, cwd: cwd, inbox: inbox, parent: r}))
 	sessions := attachMCP(ctx, reg, settings.MCPServers, errOut)
@@ -582,6 +583,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 	tr.SetStatus(model, mode, signedIn(home))
 	inbox := &agent.Mailbox{}
 	grants := &agent.Grants{}
+	grants.Bind(home, cwd)
 	var images []string
 	continued := inv.Continue || inv.Resume != ""
 	var comp tui.Composer
@@ -665,7 +667,7 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 		case "shell":
 			return tr.User(shellSlash(rest))
 		case "allowlist":
-			return tr.User(allowlistText(grants))
+			return tr.User(allowlistCommand(home, cwd, rest, grants))
 		case "version":
 			return tr.User("fx " + cli.Version)
 		case "quit", "exit":
@@ -985,14 +987,88 @@ func statusLine(inv cli.Invocation, settings config.File, cwd string) string {
 	return "model " + model + "\npermission " + mode + "\nworkspace " + cwd
 }
 
-func allowlistText(grants *agent.Grants) string {
-	list := grants.List()
+func allowlistCommand(home, cwd, rest string, grants *agent.Grants) string {
+	fields := strings.Fields(rest)
+	if len(fields) == 0 || fields[0] == "view" {
+		scope := agent.ScopeEffective
+		if len(fields) > 1 {
+			scope = fields[1]
+		}
+		if len(fields) > 2 {
+			return allowlistUsage()
+		}
+		return formatAllowlist(home, cwd, scope)
+	}
+	scope := agent.ScopeWorkspace
+	cmd := fields[0]
+	args := fields[1:]
+	if fields[0] == agent.ScopeWorkspace || fields[0] == agent.ScopeGlobal {
+		scope = fields[0]
+		if len(fields) < 2 {
+			return allowlistUsage()
+		}
+		cmd = fields[1]
+		args = fields[2:]
+	}
+	switch cmd {
+	case "add":
+		if len(args) < 2 {
+			return "usage: /allowlist add <tool> <target>"
+		}
+		toolName, target := args[0], strings.Join(args[1:], " ")
+		if err := agent.AddGrant(scope, home, cwd, toolName, target); err != nil {
+			return err.Error()
+		}
+		if grants != nil {
+			grants.Add(toolName, target)
+		}
+		return "added " + scope + " " + toolName + " " + target
+	case "remove":
+		if len(args) < 2 {
+			return "usage: /allowlist remove <tool> <target>"
+		}
+		toolName, target := args[0], strings.Join(args[1:], " ")
+		if err := agent.RemoveGrant(scope, home, cwd, toolName, target); err != nil {
+			return err.Error()
+		}
+		if grants != nil {
+			grants.Drop(toolName, target)
+		}
+		return "removed " + scope + " " + toolName + " " + target
+	case "reset":
+		if len(args) != 0 {
+			return allowlistUsage()
+		}
+		if err := agent.ResetGrants(scope, home, cwd); err != nil {
+			return err.Error()
+		}
+		if grants != nil {
+			grants.Reset()
+		}
+		return "reset " + scope + " allowlist"
+	default:
+		return allowlistUsage()
+	}
+}
+
+func allowlistUsage() string {
+	return "usage: /allowlist [view [effective|workspace|global]|[workspace|global] add|remove|reset ...]"
+}
+
+func formatAllowlist(home, cwd, scope string) string {
+	list, err := agent.ListGrants(scope, home, cwd)
+	if err != nil {
+		return err.Error()
+	}
 	if len(list) == 0 {
-		return "allowlist is empty"
+		if scope == agent.ScopeEffective || scope == "" {
+			return "allowlist is empty"
+		}
+		return scope + " allowlist is empty"
 	}
 	var b strings.Builder
 	for _, g := range list {
-		fmt.Fprintf(&b, "%s  %s\n", g.Tool, g.Target)
+		fmt.Fprintf(&b, "%s  %s  %s\n", g.Scope, g.Tool, g.Target)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

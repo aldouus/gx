@@ -55,6 +55,7 @@ type Runner struct {
 	Review    Reviewer
 	Grants    *Grants
 	Inbox     *Mailbox
+	Home      string
 	Workspace string
 	Extra     string
 	CompactAt int
@@ -281,7 +282,7 @@ func (r *Runner) runTools(ctx context.Context, calls []provider.ToolCall, emit f
 
 func (r *Runner) allow(ctx context.Context, call provider.ToolCall, emit func(Event)) (bool, string, error) {
 	target := grantTarget(call)
-	if r.Grants != nil && r.Grants.Allows(call.Name, target) {
+	if r.permitted(call.Name, target) {
 		return true, "", nil
 	}
 	t, ok := r.Tools.Get(call.Name)
@@ -318,13 +319,26 @@ func (r *Runner) allow(ctx context.Context, call provider.ToolCall, emit func(Ev
 		if err != nil {
 			return false, "", err
 		}
-		if verdict == Always && r.Grants != nil {
-			r.Grants.Add(call.Name, target)
+		if verdict == Always {
+			if r.Grants == nil {
+				r.Grants = &Grants{}
+			}
+			r.Grants.Bind(r.Home, r.Workspace)
+			if err := r.Grants.Remember(call.Name, target); err != nil {
+				return false, note, err
+			}
 		}
 		return verdict == Once || verdict == Always, note, nil
 	default:
 		return false, "", nil
 	}
+}
+
+func (r *Runner) permitted(name, target string) bool {
+	if r.Grants != nil && r.Grants.Allows(name, target) {
+		return true
+	}
+	return FilesAllow(r.Home, r.Workspace, name, target)
 }
 
 func grantTarget(call provider.ToolCall) string {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"gx/internal/agent"
 	"gx/internal/cli"
 	"gx/internal/config"
 	"gx/internal/session"
@@ -99,6 +100,61 @@ func TestAttachImage(t *testing.T) {
 	}
 	if len(images) != 0 {
 		t.Fatalf("cleared: %v", images)
+	}
+}
+
+func TestAllowlistSlashPersists(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	var buf bytes.Buffer
+	tr := tui.NewTranscript(&buf, 80)
+	grants := &agent.Grants{}
+	grants.Bind(home, cwd)
+	line := "/allowlist global add web_fetch https://example.com"
+	if err := handleSubmit(cli.Invocation{}, config.File{}, home, cwd, tr, &buf, line, nil, nil, grants, nil); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(agent.GlobalAllowlist(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %o", info.Mode().Perm())
+	}
+	if !grants.Allows("web_fetch", "https://example.com") {
+		t.Fatal("grant was not consulted")
+	}
+	buf.Reset()
+	if err := handleSubmit(cli.Invocation{}, config.File{}, home, cwd, tr, &buf, "/allowlist view global", nil, nil, grants, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "web_fetch") || !strings.Contains(buf.String(), "https://example.com") {
+		t.Fatal(buf.String())
+	}
+	buf.Reset()
+	if err := handleSubmit(cli.Invocation{}, config.File{}, home, cwd, tr, &buf, "/allowlist global remove web_fetch https://example.com", nil, nil, grants, nil); err != nil {
+		t.Fatal(err)
+	}
+	if grants.Allows("web_fetch", "https://example.com") {
+		t.Fatal("removed grant still allowed")
+	}
+	buf.Reset()
+	if err := handleSubmit(cli.Invocation{}, config.File{}, home, cwd, tr, &buf, "/allowlist workspace add shell ls", nil, nil, grants, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(agent.WorkspaceAllowlist(cwd)); err != nil {
+		t.Fatal(err)
+	}
+	buf.Reset()
+	if err := handleSubmit(cli.Invocation{}, config.File{}, home, cwd, tr, &buf, "/allowlist workspace reset", nil, nil, grants, nil); err != nil {
+		t.Fatal(err)
+	}
+	list, err := agent.ListGrants(agent.ScopeWorkspace, home, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("reset %#v", list)
 	}
 }
 

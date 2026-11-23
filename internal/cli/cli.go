@@ -282,7 +282,7 @@ var SlashCommands = []Slash{
 	{"agents", "List subagents"},
 	{"status", "Show the model, permission mode, and workspace"},
 	{"shell", "Reload shell startup files"},
-	{"allowlist", "List commands allowed for this session"},
+	{"allowlist", "View, add, remove, or reset trusted tools"},
 	{"login", "Sign in to codex or grok"},
 	{"logout", "Sign out of codex or grok"},
 	{"image", "Attach an image to the next prompt"},
