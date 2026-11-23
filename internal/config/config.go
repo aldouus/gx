@@ -17,6 +17,7 @@ type Settings struct {
 	Provider       string `json:"provider,omitempty"`
 	BaseURL        string `json:"base_url,omitempty"`
 	Profile        string `json:"profile,omitempty"`
+	ServiceTier    string `json:"service_tier,omitempty"`
 }
 
 // Profile is an agent profile: tools, model, prompt, and permission mode.

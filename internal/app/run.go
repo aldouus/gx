@@ -323,6 +323,8 @@ func settingGet(s config.File, key string) string {
 		return s.Provider
 	case "base_url":
 		return s.BaseURL
+	case "service_tier":
+		return s.ServiceTier
 	default:
 		return ""
 	}
@@ -341,6 +343,8 @@ func settingSet(s *config.File, key, value string) error {
 		s.Provider = value
 	case "base_url":
 		s.BaseURL = value
+	case "service_tier":
+		s.ServiceTier = value
 	default:
 		return fmt.Errorf("unknown setting %s", key)
 	}
@@ -523,14 +527,15 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 		inbox = &agent.Mailbox{}
 	}
 	r := &agent.Runner{
-		Provider: prov,
-		Tools:    reg,
-		Mode:     mode,
-		Model:    model,
-		Session:  sess,
-		Inbox:    inbox,
-		Images:   inv.Images,
-		Extra:    extra,
+		Provider:    prov,
+		Tools:       reg,
+		Mode:        mode,
+		Model:       model,
+		ServiceTier: settings.ServiceTier,
+		Session:     sess,
+		Inbox:       inbox,
+		Images:      inv.Images,
+		Extra:       extra,
 		Approve: func(ctx context.Context, name, detail string) (agent.Verdict, string, error) {
 			if approve != nil {
 				return approve(ctx, name, detail)
@@ -1284,7 +1289,7 @@ func compactSession(inv cli.Invocation, settings config.File, home, cwd string, 
 		return "nothing to compact"
 	}
 	defer sess.Close()
-	r := &agent.Runner{Provider: prov, Model: model, Session: sess, Workspace: cwd}
+	r := &agent.Runner{Provider: prov, Model: model, ServiceTier: settings.ServiceTier, Session: sess, Workspace: cwd}
 	if err := r.CompactNow(context.Background(), nil); err != nil {
 		return err.Error()
 	}

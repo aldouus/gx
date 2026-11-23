@@ -46,22 +46,23 @@ type Reviewer func(ctx context.Context, name, detail string) (allow bool, reason
 
 // Runner is one turn of the agent loop.
 type Runner struct {
-	Provider  provider.Provider
-	Tools     *tool.Registry
-	Mode      perm.Mode
-	Model     string
-	Session   *session.Session
-	Approve   Approval
-	Review    Reviewer
-	Grants    *Grants
-	Inbox     *Mailbox
-	Home      string
-	Workspace string
-	Extra     string
-	CompactAt int
-	MaxRounds int
-	Depth     int
-	Images    []string
+	Provider    provider.Provider
+	Tools       *tool.Registry
+	Mode        perm.Mode
+	Model       string
+	ServiceTier string
+	Session     *session.Session
+	Approve     Approval
+	Review      Reviewer
+	Grants      *Grants
+	Inbox       *Mailbox
+	Home        string
+	Workspace   string
+	Extra       string
+	CompactAt   int
+	MaxRounds   int
+	Depth       int
+	Images      []string
 }
 
 // Turn sends prompt, streams the reply, runs tool calls, and commits the turn.
@@ -148,9 +149,11 @@ func (r *Runner) CompactNow(ctx context.Context, emit func(Event)) error {
 
 func (r *Runner) complete(ctx context.Context, emit func(Event)) (string, []provider.ToolCall, error) {
 	req := provider.Request{
-		Model:    r.Model,
-		Messages: r.messages(),
-		Tools:    r.toolDefs(),
+		Model:       r.Model,
+		Messages:    r.messages(),
+		Tools:       r.toolDefs(),
+		ServiceTier: r.ServiceTier,
+		Reasoning:   r.Session.ReasoningItems(),
 	}
 	ch, err := r.Provider.Stream(ctx, req)
 	if err != nil {
@@ -162,6 +165,11 @@ func (r *Runner) complete(ctx context.Context, emit func(Event)) (string, []prov
 	for d := range ch {
 		if err := ctx.Err(); err != nil {
 			return text.String(), nil, err
+		}
+		if len(d.Reasoning) > 0 {
+			if err := r.Session.Reasoning(d.Reasoning); err != nil {
+				return text.String(), nil, err
+			}
 		}
 		if d.Text != "" {
 			text.WriteString(d.Text)

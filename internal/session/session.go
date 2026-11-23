@@ -347,6 +347,26 @@ func (s *Session) Commit() error {
 	return nil
 }
 
+// Reasoning stores one Responses reasoning item so a later turn can send
+// its encrypted_content back.
+func (s *Session) Reasoning(item json.RawMessage) error {
+	if !s.open || len(item) == 0 {
+		return nil
+	}
+	return s.append("reasoning", s.turn, item, false)
+}
+
+// ReasoningItems is every stored reasoning item, in log order.
+func (s *Session) ReasoningItems() []json.RawMessage {
+	var out []json.RawMessage
+	for _, ev := range s.Events() {
+		if ev.Kind == "reasoning" && len(ev.Data) > 0 {
+			out = append(out, append(json.RawMessage(nil), ev.Data...))
+		}
+	}
+	return out
+}
+
 // Compaction records a summary and does not by itself close a turn.
 func (s *Session) Compaction(summary string, kept int) error {
 	body, err := json.Marshal(map[string]any{"summary": summary, "kept": kept})

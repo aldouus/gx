@@ -20,11 +20,12 @@ const (
 
 // Responses streams the OpenAI Responses API used by Codex and Grok subscriptions.
 type Responses struct {
-	Kind      string // "codex" or "grok"
-	URL       string
-	APIKey    string
-	AccountID string
-	Client    *http.Client
+	Kind          string // "codex" or "grok"
+	URL           string
+	APIKey        string
+	AccountID     string
+	Client        *http.Client
+	ClientVersion string
 }
 
 func (r Responses) endpoint() string {
@@ -64,6 +65,9 @@ func (r Responses) Stream(ctx context.Context, req Request) (<-chan Delta, error
 		httpReq.Header.Set("X-XAI-Token-Auth", "xai-grok-cli")
 		httpReq.Header.Set("x-authenticateresponse", "authenticate-response")
 		httpReq.Header.Set("x-grok-client-identifier", "fx")
+		if version := r.clientVersion(ctx); version != "" {
+			httpReq.Header.Set("x-grok-client-version", version)
+		}
 		httpReq.Header.Set("x-grok-model-override", req.Model)
 		if r.AccountID != "" {
 			httpReq.Header.Set("x-grok-user-id", r.AccountID)
@@ -144,6 +148,15 @@ func encodeResponses(req Request) map[string]any {
 	if len(instructions) == 0 {
 		instructions = []string{"You are a helpful assistant."}
 	}
+	for _, item := range req.Reasoning {
+		if len(item) == 0 {
+			continue
+		}
+		var decoded any
+		if json.Unmarshal(item, &decoded) == nil {
+			input = append(input, decoded)
+		}
+	}
 	body := map[string]any{
 		"model":               req.Model,
 		"store":               false,
@@ -151,6 +164,10 @@ func encodeResponses(req Request) map[string]any {
 		"instructions":        strings.Join(instructions, "\n\n"),
 		"input":               input,
 		"parallel_tool_calls": true,
+		"include":             []string{"reasoning.encrypted_content"},
+	}
+	if req.ServiceTier != "" {
+		body["service_tier"] = req.ServiceTier
 	}
 	if len(req.Tools) > 0 {
 		var tools []any
@@ -229,32 +246,40 @@ func DecodeResponses(r io.Reader, emit func(Delta) error) error {
 
 func emitResponses(payload string, seenArgs map[int]bool, emit func(Delta) error) error {
 	var ev struct {
-		Type        string `json:"type"`
-		Delta       string `json:"delta"`
-		Arguments   string `json:"arguments"`
-		OutputIndex int    `json:"output_index"`
-		Item        struct {
-			Type      string `json:"type"`
-			CallID    string `json:"call_id"`
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
-		} `json:"item"`
+		Type        string          `json:"type"`
+		Delta       string          `json:"delta"`
+		Arguments   string          `json:"arguments"`
+		OutputIndex int             `json:"output_index"`
+		Item        json.RawMessage `json:"item"`
+	}
+	var item struct {
+		Type             string `json:"type"`
+		CallID           string `json:"call_id"`
+		Name             string `json:"name"`
+		Arguments        string `json:"arguments"`
+		EncryptedContent string `json:"encrypted_content"`
 	}
 	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
 		return nil
+	}
+	if len(ev.Item) > 0 {
+		_ = json.Unmarshal(ev.Item, &item)
 	}
 	switch ev.Type {
 	case "response.output_text.delta":
 		if ev.Delta != "" {
 			return emit(Delta{Text: ev.Delta})
 		}
-	case "response.output_item.added":
-		if ev.Item.Type == "function_call" {
+	case "response.output_item.added", "response.output_item.done":
+		if item.Type == "reasoning" && item.EncryptedContent != "" {
+			return emit(Delta{Reasoning: ev.Item})
+		}
+		if ev.Type == "response.output_item.added" && item.Type == "function_call" {
 			return emit(Delta{Call: &CallDelta{
 				Index: ev.OutputIndex,
-				ID:    ev.Item.CallID,
-				Name:  ev.Item.Name,
-				Args:  ev.Item.Arguments,
+				ID:    item.CallID,
+				Name:  item.Name,
+				Args:  item.Arguments,
 			}})
 		}
 	case "response.function_call_arguments.delta":

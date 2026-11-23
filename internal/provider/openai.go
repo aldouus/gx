@@ -42,16 +42,20 @@ type Part struct {
 
 // Request is one streamed completion.
 type Request struct {
-	Model    string
-	Messages []Message
-	Tools    []Tool
+	Model       string
+	Messages    []Message
+	Tools       []Tool
+	ServiceTier string
+	// Reasoning is prior Responses reasoning items, including encrypted_content.
+	Reasoning []json.RawMessage
 }
 
 // Delta is one piece of the stream.
 type Delta struct {
-	Text string
-	Call *CallDelta
-	Done bool
+	Text      string
+	Call      *CallDelta
+	Reasoning json.RawMessage
+	Done      bool
 }
 
 // CallDelta is one fragment of a tool call.

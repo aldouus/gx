@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -55,5 +57,47 @@ func TestResponsesTextAndToolCall(t *testing.T) {
 	}
 	if !strings.Contains(got, `"parameters":{"type":"object"}`) {
 		t.Fatal(got)
+	}
+	if !strings.Contains(got, `"include":["reasoning.encrypted_content"]`) {
+		t.Fatal(got)
+	}
+}
+
+func TestResponsesReasoningAndGrokVersion(t *testing.T) {
+	version := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("1.2.3\n"))
+	}))
+	defer version.Close()
+	t.Setenv("GX_TEST_GROK_VERSION_URL", version.URL)
+	var got, versionHeader string
+	var sawReasoning bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		versionHeader = r.Header.Get("x-grok-client-version")
+		body, _ := io.ReadAll(r.Body)
+		got = string(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"opaque\",\"summary\":[]}}\n\n"))
+	}))
+	defer srv.Close()
+	p := Responses{Kind: "grok", URL: srv.URL, APIKey: "tok"}
+	ch, err := p.Stream(t.Context(), Request{
+		Model:       "grok-4.7",
+		ServiceTier: "priority",
+		Messages:    []Message{{Role: "user", Text: "hi"}},
+		Reasoning:   []json.RawMessage{json.RawMessage(`{"type":"reasoning","encrypted_content":"kept"}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for d := range ch {
+		if len(d.Reasoning) > 0 && strings.Contains(string(d.Reasoning), "opaque") {
+			sawReasoning = true
+		}
+	}
+	if versionHeader != "1.2.3" {
+		t.Fatalf("version %q", versionHeader)
+	}
+	if !sawReasoning || !strings.Contains(got, `"service_tier":"priority"`) || !strings.Contains(got, `"encrypted_content":"kept"`) {
+		t.Fatalf("reasoning %v body %s", sawReasoning, got)
 	}
 }
