@@ -469,6 +469,24 @@ func TestWelcomeLogoIsGX(t *testing.T) {
 	}
 }
 
+func TestKittyImageUsesPNGPlacement(t *testing.T) {
+	png := make([]byte, 24)
+	copy(png, []byte("\x89PNG\r\n\x1a\n"))
+	png[16], png[17], png[18], png[19] = 0, 0, 0, 10
+	png[20], png[21], png[22], png[23] = 0, 0, 0, 20
+	w, h, ok := pngSize(png)
+	if !ok || w != 10 || h != 20 {
+		t.Fatalf("size %d %d %v", w, h, ok)
+	}
+	seq := kittyPNG(png, 7, 12, 6)
+	if !strings.HasPrefix(seq, "\x1b_Ga=T,f=100,t=d,q=2,i=7,c=12,r=6,m=0;") || !strings.HasSuffix(seq, "\x1b\\") {
+		t.Fatal(seq)
+	}
+	if strings.Contains(seq, "\n") {
+		t.Fatal("payload must stay on one graphics command")
+	}
+}
+
 func TestImageBadge(t *testing.T) {
 	got := ImageBadge(2, "/tmp/pic.png")
 	want := "\x1b]8;;file:///tmp/pic.png\x1b\\[Image 2]\x1b]8;;\x1b\\"

@@ -38,6 +38,15 @@ type winsize struct {
 	Row, Col, Xpixel, Ypixel uint16
 }
 
+func pixelSize(fd int) (x, y int) {
+	var ws winsize
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCGWINSZ, uintptr(unsafe.Pointer(&ws)))
+	if errno != 0 {
+		return 0, 0
+	}
+	return int(ws.Xpixel), int(ws.Ypixel)
+}
+
 func size(fd int) (rows, cols int) {
 	var ws winsize
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCGWINSZ, uintptr(unsafe.Pointer(&ws)))

@@ -938,18 +938,13 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 		next.Images = append(append([]string{}, next.Images...), *images...)
 		*images = nil
 	}
-	shown := line
-	if len(next.Images) > 0 {
-		var b strings.Builder
-		b.WriteString(line)
-		for i, path := range next.Images {
-			b.WriteByte('\n')
-			b.WriteString(tui.ImageBadge(i+1, path))
-		}
-		shown = b.String()
-	}
-	if err := tr.User(shown); err != nil {
+	if err := tr.User(line); err != nil {
 		return err
+	}
+	for _, path := range next.Images {
+		if err := tr.ShowImage(path); err != nil {
+			return err
+		}
 	}
 	tr.SetBusy(true)
 	defer tr.SetBusy(false)
@@ -2011,12 +2006,13 @@ func attachImage(cwd, rest string, images *[]string, tr *tui.Transcript) error {
 	if _, err := os.Stat(path); err != nil {
 		return tr.User(err.Error())
 	}
-	n := 1
 	if images != nil {
 		*images = append(*images, path)
-		n = len(*images)
 	}
-	return tr.User("attached " + path + "\n" + tui.ImageBadge(n, path))
+	if err := tr.User("attached " + filepath.Base(path)); err != nil {
+		return err
+	}
+	return tr.ShowImage(path)
 }
 
 func listImages(rest string, images *[]string, tr *tui.Transcript) error {
@@ -2029,7 +2025,12 @@ func listImages(rest string, images *[]string, tr *tui.Transcript) error {
 	if images == nil || len(*images) == 0 {
 		return tr.User("no images attached")
 	}
-	return tr.User(strings.Join(*images, "\n"))
+	for _, path := range *images {
+		if err := tr.ShowImage(path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type writerFunc func([]byte) (int, error)
