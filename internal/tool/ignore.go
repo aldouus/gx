@@ -28,6 +28,63 @@ func newIgnorer() *ignorer {
 
 // observe loads dir's .gitignore. rel is dir relative to the walk root,
 // or "" for the root itself. A missing file is not an error.
+func (ig *ignorer) loadRoot(root string) {
+	ig.readFile(filepath.Join(root, ".git", "info", "exclude"), "")
+	for _, path := range globalExcludes() {
+		ig.readFile(path, "")
+	}
+}
+
+func globalExcludes() []string {
+	var out []string
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	out = append(out,
+		filepath.Join(home, ".config", "git", "ignore"),
+		filepath.Join(home, ".gitignore_global"),
+	)
+	if path := excludesFileFrom(filepath.Join(home, ".gitconfig")); path != "" {
+		if strings.HasPrefix(path, "~/") {
+			path = filepath.Join(home, path[2:])
+		}
+		out = append(out, path)
+	}
+	return out
+}
+
+func excludesFileFrom(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "excludesfile") {
+			_, rest, ok := strings.Cut(line, "=")
+			if ok {
+				return strings.TrimSpace(rest)
+			}
+		}
+	}
+	return ""
+}
+
+func (ig *ignorer) readFile(path, base string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		if p, ok := parseIgnore(sc.Text(), base); ok {
+			ig.patterns = append(ig.patterns, p)
+		}
+	}
+}
+
 func (ig *ignorer) observe(dir, rel string) {
 	rel = filepath.ToSlash(rel)
 	if rel == "." {
@@ -37,17 +94,7 @@ func (ig *ignorer) observe(dir, rel string) {
 		return
 	}
 	ig.seen[rel] = true
-	f, err := os.Open(filepath.Join(dir, ".gitignore"))
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		if p, ok := parseIgnore(sc.Text(), rel); ok {
-			ig.patterns = append(ig.patterns, p)
-		}
-	}
+	ig.readFile(filepath.Join(dir, ".gitignore"), rel)
 }
 
 // ignored reports whether rel, relative to the walk root, is ignored.
@@ -107,6 +154,13 @@ func ignoreRegex(pattern string, anywhere bool) string {
 			i += 2
 			continue
 		}
+		if pattern[i] == '[' {
+			if class, n, ok := ignoreClass(pattern[i:]); ok {
+				b.WriteString(class)
+				i += n
+				continue
+			}
+		}
 		switch pattern[i] {
 		case '*':
 			b.WriteString("[^/]*")
@@ -119,6 +173,32 @@ func ignoreRegex(pattern string, anywhere bool) string {
 	}
 	b.WriteString("$")
 	return b.String()
+}
+
+func ignoreClass(pattern string) (string, int, bool) {
+	if len(pattern) < 3 || pattern[0] != '[' {
+		return "", 0, false
+	}
+	j := 1
+	neg := false
+	if pattern[j] == '!' || pattern[j] == '^' {
+		neg = true
+		j++
+	}
+	if j < len(pattern) && pattern[j] == ']' {
+		j++
+	}
+	for j < len(pattern) && pattern[j] != ']' {
+		j++
+	}
+	if j >= len(pattern) || pattern[j] != ']' {
+		return "", 0, false
+	}
+	body := pattern[1:j]
+	if neg {
+		body = "^" + strings.TrimLeft(body, "!^")
+	}
+	return "[" + body + "]", j + 1, true
 }
 
 func (p ignorePattern) matches(rel string, isDir bool) bool {

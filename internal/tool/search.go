@@ -68,6 +68,7 @@ func (t grepFiles) Run(_ context.Context, args json.RawMessage) (string, error) 
 	var hits []string
 	skipped := 0
 	ig := newIgnorer()
+	ig.loadRoot(root)
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d == nil {
 			return nil
@@ -197,6 +198,7 @@ func (t globFiles) Run(_ context.Context, args json.RawMessage) (string, error) 
 	}
 	var matches []string
 	ig := newIgnorer()
+	ig.loadRoot(root)
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d == nil {
 			return nil

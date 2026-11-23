@@ -9,6 +9,35 @@ import (
 	"testing"
 )
 
+func TestSearchHonorsExcludeAndClasses(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		path := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".git/info/exclude", "excluded.txt\n")
+	write(".gitignore", "file[0-9].txt\n")
+	write("excluded.txt", "EXCLUDED\n")
+	write("file1.txt", "CLASS\n")
+	write("fileA.txt", "KEPT\n")
+	got, err := GrepFiles(Workspace{Roots: []string{dir}}).Run(context.Background(), json.RawMessage(`{"pattern":"E"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "EXCLUDED") || strings.Contains(got, "CLASS") {
+		t.Fatalf("exclude or class missed:\n%s", got)
+	}
+	if !strings.Contains(got, "KEPT") {
+		t.Fatalf("kept file missing:\n%s", got)
+	}
+}
+
 func TestSearchHonorsGitignore(t *testing.T) {
 	dir := t.TempDir()
 	write := func(rel, body string) {
