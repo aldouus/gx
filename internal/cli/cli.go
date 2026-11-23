@@ -283,6 +283,7 @@ var SlashCommands = []Slash{
 	{"copy", "Copy the last assistant response"},
 	{"undo", "Undo the latest file write"},
 	{"effort", "Set the reasoning effort"},
+	{"fast", "Turn fast mode on or off"},
 	{"settings", "Show settings"},
 	{"statusline", "Toggle footer segments"},
 	{"launch", "Start another fx instance"},

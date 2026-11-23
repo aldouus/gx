@@ -19,6 +19,7 @@ type Settings struct {
 	Profile        string   `json:"profile,omitempty"`
 	ServiceTier    string   `json:"service_tier,omitempty"`
 	Effort         string   `json:"effort,omitempty"`
+	Fast           bool     `json:"fast,omitempty"`
 	ExtraDirs      []string `json:"extra_dirs,omitempty"`
 }
 

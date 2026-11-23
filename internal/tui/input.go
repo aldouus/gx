@@ -27,6 +27,7 @@ type Action struct {
 	Up        bool
 	Down      bool
 	Tab       bool
+	Close     bool
 }
 
 // Feed consumes one chunk of terminal input.
@@ -104,11 +105,16 @@ func (c *Composer) Feed(b []byte) Action {
 			act.Tab = true
 			act.Redraw = true
 		case 0x1b:
+			if len(b) == 1 {
+				c.pending = append([]byte{}, b...)
+				return act
+			}
 			rest, a := c.escape(b)
 			b = rest
-			if a.Interrupt {
-				act.Interrupt = true
-			}
+			act.Interrupt = a.Interrupt
+			act.Up = a.Up
+			act.Down = a.Down
+			act.Close = a.Close
 			act.Redraw = true
 		default:
 			if b[0] < 0x20 {
@@ -154,6 +160,9 @@ func (c *Composer) deleteForward() {
 
 func (c *Composer) escape(b []byte) ([]byte, Action) {
 	if len(b) == 1 {
+		if strings.HasPrefix(strings.TrimSpace(c.Line), "/") {
+			return nil, Action{Close: true}
+		}
 		if c.Esc {
 			c.Esc = false
 			return nil, Action{Interrupt: true}
@@ -164,17 +173,17 @@ func (c *Composer) escape(b []byte) ([]byte, Action) {
 	}
 	c.Esc = false
 	c.Armed = false
-	if len(b) >= 3 && b[1] == '[' {
+	if len(b) >= 3 && (b[1] == '[' || b[1] == 'O') {
 		switch b[2] {
 		case 'A':
 			if strings.HasPrefix(strings.TrimSpace(c.Line), "/") {
-				return b[3:], Action{Up: true}
+				return b[3:], Action{Up: true, Redraw: true}
 			}
 			c.history(-1)
 			return b[3:], Action{}
 		case 'B':
 			if strings.HasPrefix(strings.TrimSpace(c.Line), "/") {
-				return b[3:], Action{Down: true}
+				return b[3:], Action{Down: true, Redraw: true}
 			}
 			c.history(1)
 			return b[3:], Action{}
@@ -191,6 +200,9 @@ func (c *Composer) escape(b []byte) ([]byte, Action) {
 			c.Pos = len(c.Line)
 			return b[3:], Action{}
 		}
+	}
+	if strings.HasPrefix(strings.TrimSpace(c.Line), "/") {
+		return b[1:], Action{Close: true}
 	}
 	return b[1:], Action{}
 }

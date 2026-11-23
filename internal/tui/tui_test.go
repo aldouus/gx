@@ -254,6 +254,21 @@ func TestProgramStatus(t *testing.T) {
 	}
 }
 
+func TestArrowSelectsSlashMenu(t *testing.T) {
+	var c Composer
+	c.Line = "/log"
+	c.Pos = len(c.Line)
+	act := c.Feed([]byte("\x1b[B"))
+	if !act.Down {
+		t.Fatal("down arrow did not move the slash menu")
+	}
+	_ = c.Feed([]byte{0x1b})
+	act = c.Feed([]byte{'x'})
+	if !act.Close {
+		t.Fatal("esc did not close the slash menu")
+	}
+}
+
 func TestSlashMenuAndWorkingGap(t *testing.T) {
 	var buf bytes.Buffer
 	tr := NewTranscript(&buf, 80)
@@ -266,8 +281,11 @@ func TestSlashMenuAndWorkingGap(t *testing.T) {
 		t.Fatal(err)
 	}
 	plain := strip(buf.String())
-	if !strings.Contains(plain, "/login") || !strings.Contains(plain, "/logout") {
+	if !strings.Contains(plain, "/login") || !strings.Contains(plain, "Results 2") || !strings.Contains(plain, "navigate") {
 		t.Fatal(plain)
+	}
+	if strings.Index(plain, "/log") > strings.Index(plain, "Results 2") {
+		t.Fatal("menu is above the prompt")
 	}
 	tr.SetCompletions(nil, 0)
 	tr.SetBusy(true)

@@ -662,7 +662,7 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 		Tools:       reg,
 		Mode:        mode,
 		Model:       model,
-		ServiceTier: settings.ServiceTier,
+		ServiceTier: serviceTier(settings),
 		Session:     sess,
 		Inbox:       inbox,
 		Images:      inv.Images,
@@ -742,7 +742,8 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 		mode = string(perm.Default)
 	}
 	tr.SetStatus(model, mode, signedIn(home))
-	tr.SetPlace(cwd, "medium")
+	tr.SetPlace(cwd, settings.Effort)
+	tr.SetFast(settings.Fast)
 	if !inv.Continue && inv.Resume == "" {
 		_ = tr.Welcome(cli.Version)
 	}
@@ -753,6 +754,8 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 	continued := inv.Continue || inv.Resume != ""
 	var comp tui.Composer
 	slashSel := 0
+	slashClosed := false
+	slashLine := ""
 	tr.SetInput(comp.Line, comp.Pos)
 	if err := tr.Paint(); err != nil {
 		fmt.Fprintln(errOut, err)
@@ -778,7 +781,17 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 		if act.Detail {
 			tr.ToggleDetail()
 		}
-		matches := cli.CompleteSlash(comp.Line)
+		if act.Close {
+			slashClosed = true
+		}
+		if comp.Line != slashLine {
+			slashClosed = false
+			slashLine = comp.Line
+		}
+		matches := slashMatches(cwd, home, comp.Line)
+		if slashClosed {
+			matches = nil
+		}
 		if act.Up && len(matches) > 0 {
 			slashSel--
 			if slashSel < 0 {
@@ -795,20 +808,19 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 			slashSel = 0
 		}
 		if act.Tab && len(matches) > 0 {
-			comp.Line = "/" + matches[slashSel].Name
-			if !strings.Contains(matches[slashSel].Name, " ") {
-				comp.Line += " "
-			}
+			comp.Line = matches[slashSel].Insert
 			comp.Pos = len(comp.Line)
-			matches = cli.CompleteSlash(comp.Line)
+			matches = slashMatches(cwd, home, comp.Line)
 			slashSel = 0
 		}
 		if act.Submit != "" && len(matches) > 0 {
-			if _, _, ok := cli.MatchSlash(act.Submit); !ok {
-				act.Submit = "/" + strings.Fields(matches[slashSel].Name)[0]
+			if matches[slashSel].Skill {
+				act.Submit = "use the " + matches[slashSel].Label + " skill"
+			} else if _, _, ok := cli.MatchSlash(act.Submit); !ok {
+				act.Submit = strings.TrimSpace(matches[slashSel].Insert)
 			}
 		}
-		tr.SetCompletions(slashRows(matches), slashSel)
+		tr.SetCompletions(matches, slashSel)
 		tr.SetCtrlC(comp.Armed)
 		tr.SetInput(comp.Line, comp.Pos)
 		if act.Submit != "" {
@@ -893,6 +905,8 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 			return tr.User(undoLast())
 		case "effort":
 			return tr.User(effortSlash(settings, tr, rest))
+		case "fast":
+			return tr.User(fastSlash(home, settings, tr, rest))
 		case "settings":
 			return tr.User(settingsSlash(settings))
 		case "statusline":
@@ -1515,20 +1529,74 @@ func agentList(inbox *agent.Mailbox) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func slashRows(matches []cli.Slash) []tui.Completion {
-	if len(matches) == 0 {
+func slashMatches(cwd, home, line string) []tui.Completion {
+	if !strings.HasPrefix(strings.TrimLeft(line, " \t"), "/") {
 		return nil
 	}
-	out := make([]tui.Completion, len(matches))
-	for i, m := range matches {
-		label := "/" + m.Name
-		detail := m.Help
-		if strings.Contains(m.Name, " ") {
-			detail = m.Help
+	var out []tui.Completion
+	for _, c := range cli.CompleteSlash(line) {
+		insert := "/" + c.Name
+		if !strings.Contains(c.Name, " ") {
+			insert += " "
 		}
-		out[i] = tui.Completion{Label: label, Detail: detail}
+		out = append(out, tui.Completion{Label: "/" + c.Name, Detail: c.Help, Insert: insert})
+	}
+	body := strings.TrimPrefix(strings.TrimLeft(line, " \t"), "/")
+	if strings.Contains(body, " ") {
+		return out
+	}
+	query := strings.ToLower(body)
+	found, err := skills.Discover(cwd, home)
+	if err != nil {
+		return out
+	}
+	for _, sk := range found {
+		hay := strings.ToLower(sk.Name + " " + sk.Description)
+		if query != "" && !strings.Contains(hay, query) {
+			continue
+		}
+		out = append(out, tui.Completion{Label: sk.Name, Detail: sk.Description, Insert: sk.Name + " ", Skill: true})
 	}
 	return out
+}
+
+func fastSlash(home string, settings *config.File, tr *tui.Transcript, rest string) string {
+	if settings == nil {
+		settings = &config.File{}
+	}
+	switch strings.TrimSpace(rest) {
+	case "", "status":
+		if settings.Fast {
+			return "fast mode on"
+		}
+		return "fast mode off"
+	case "on":
+		settings.Fast = true
+		settings.ServiceTier = "priority"
+		_ = config.Save(home, *settings)
+		tr.SetFast(true)
+		return "fast mode on"
+	case "off":
+		settings.Fast = false
+		if settings.ServiceTier == "priority" {
+			settings.ServiceTier = ""
+		}
+		_ = config.Save(home, *settings)
+		tr.SetFast(false)
+		return "fast mode off"
+	default:
+		return "usage: /fast [on|off|status]"
+	}
+}
+
+func serviceTier(settings config.File) string {
+	if settings.ServiceTier != "" {
+		return settings.ServiceTier
+	}
+	if settings.Fast {
+		return "priority"
+	}
+	return ""
 }
 
 func loginSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, settings config.File) error {

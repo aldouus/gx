@@ -60,6 +60,15 @@ type Transcript struct {
 	hideContext   bool
 	hideSession   bool
 	hideWorkspace bool
+	fast          bool
+}
+
+// SetFast shows or hides the fast-mode marker in the status line.
+func (t *Transcript) SetFast(on bool) {
+	if t == nil {
+		return
+	}
+	t.fast = on
 }
 
 func NewTranscript(out interface{ Write([]byte) (int, error) }, cols int) *Transcript {
@@ -207,6 +216,8 @@ func (t *Transcript) SetInput(line string, cursor int) {
 type Completion struct {
 	Label  string
 	Detail string
+	Insert string
+	Skill  bool
 }
 
 type menuState struct {
@@ -459,13 +470,15 @@ func (t *Transcript) frame() Frame {
 	if t.busy {
 		rows = append(rows, dim+"\u23fa Working"+reset)
 	}
-	rows = append(rows, t.completionRows()...)
 	if t.menu != nil {
 		return t.menuFrame(rows)
 	}
 	inputRow := len(rows)
 	rows = append(rows, t.inputRow())
-	rows = append(rows, t.hintRow())
+	rows = append(rows, t.completionRows()...)
+	if len(t.comps) == 0 {
+		rows = append(rows, t.hintRow())
+	}
 	col := width.String(composerMark) + width.String(t.input[:t.cursor]) + 1
 	if col < 1 {
 		col = 1
@@ -538,6 +551,7 @@ func (t *Transcript) completionRows() []string {
 	if len(t.comps) == 0 {
 		return nil
 	}
+	rule := dim + strings.Repeat("\u2500", t.cols) + reset
 	n := len(t.comps)
 	start := 0
 	if n > 6 {
@@ -553,13 +567,13 @@ func (t *Transcript) completionRows() []string {
 	if end > n {
 		end = n
 	}
-	widthName := 0
+	nameWidth := 0
 	for _, c := range t.comps[start:end] {
-		if w := width.String(c.Label); w > widthName {
-			widthName = w
+		if w := width.String(c.Label); w > nameWidth {
+			nameWidth = w
 		}
 	}
-	var rows []string
+	rows := []string{rule, dim + fmtCount(n) + reset, ""}
 	for i := start; i < end; i++ {
 		c := t.comps[i]
 		mark := "  "
@@ -568,18 +582,19 @@ func (t *Transcript) completionRows() []string {
 			mark = "\u203a "
 			style = bold
 		}
-		gap := widthName - width.String(c.Label)
-		if gap < 1 {
-			gap = 1
-		}
+		gap := nameWidth - width.String(c.Label) + 2
 		detail := c.Detail
-		if t.cols > widthName+6 {
-			detail = width.Clip(detail, t.cols-widthName-6)
+		if room := t.cols - nameWidth - 6; room > 8 {
+			detail = width.Clip(detail, room)
 		}
-		row := style + mark + c.Label + reset + dim + strings.Repeat(" ", gap) + detail + reset
-		rows = append(rows, row)
+		rows = append(rows, style+mark+c.Label+reset+dim+strings.Repeat(" ", gap)+detail+reset)
 	}
+	rows = append(rows, rule, dim+"\u2191\u2193 navigate     enter use     esc close"+reset)
 	return rows
+}
+
+func fmtCount(n int) string {
+	return "Results " + itoa(n)
 }
 
 func (t *Transcript) menuFrame(rows []string) Frame {
@@ -621,22 +636,22 @@ func (t *Transcript) hintRow() string {
 			left = append(left, t.model)
 		}
 	}
-	if !t.hideContext {
-		left = append(left, t.contextLabel())
-	}
-	if t.cwd != "" && !t.hideWorkspace {
-		left = append(left, shortPath(t.cwd))
-	}
 	effort := t.effort
 	if effort == "" {
 		effort = "medium"
 	}
 	left = append(left, effort)
-	activity := "idle"
-	if t.busy {
-		activity = "working"
+	if t.fast {
+		left = append(left, "\u26a1\ufe0e")
 	}
-	left = append(left, activity)
+	if !t.hideContext {
+		if label := t.contextLabel(); label != "0" {
+			left = append(left, label)
+		}
+	}
+	if t.cwd != "" && !t.hideWorkspace {
+		left = append(left, filepathBase(t.cwd))
+	}
 	text := strings.Join(left, " · ")
 	right := ""
 	if t.busy {
@@ -709,6 +724,17 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b[i:])
+}
+
+func filepathBase(path string) string {
+	path = strings.TrimRight(path, "/")
+	if path == "" {
+		return "/"
+	}
+	if i := strings.LastIndex(path, "/"); i >= 0 && i < len(path)-1 {
+		return path[i+1:]
+	}
+	return path
 }
 
 func shortPath(path string) string {
