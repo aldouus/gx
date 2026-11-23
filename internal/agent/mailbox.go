@@ -81,34 +81,39 @@ func (m *Mailbox) Pending() int {
 }
 
 // Wait blocks until every started child has finished or ctx ends.
+// A cancelled context wakes the waiter instead of leaving it in cond.Wait.
 func (m *Mailbox) Wait(ctx context.Context) error {
 	if m == nil || m.Pending() == 0 {
 		return nil
 	}
 	m.init()
-	done := make(chan struct{})
-	go func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		for {
-			n := 0
-			for _, k := range m.kids {
-				if !k.Done {
-					n++
-				}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for {
+		n := 0
+		for _, k := range m.kids {
+			if !k.Done {
+				n++
 			}
-			if n == 0 {
-				close(done)
-				return
-			}
-			m.cond.Wait()
 		}
-	}()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-done:
-		return nil
+		if n == 0 {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		woken := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				m.mu.Lock()
+				m.cond.Broadcast()
+				m.mu.Unlock()
+			case <-woken:
+			}
+		}()
+		m.cond.Wait()
+		close(woken)
 	}
 }
 

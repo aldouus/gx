@@ -7,6 +7,26 @@ import (
 	"time"
 )
 
+func TestWaitWakesWhenContextEnds(t *testing.T) {
+	var box Mailbox
+	ctx, cancel := context.WithCancel(context.Background())
+	box.Start("child-1", func() {})
+	done := make(chan error, 1)
+	go func() {
+		done <- box.Wait(ctx)
+	}()
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("wait returned nil after cancel")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("wait stayed blocked after the context ended")
+	}
+	box.Finish("child-1", "late")
+}
+
 func TestStopAndWait(t *testing.T) {
 	var box Mailbox
 	ctx, cancel := context.WithCancel(context.Background())
