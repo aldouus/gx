@@ -87,6 +87,15 @@ func Run(args []string, in io.Reader, out, errOut io.Writer) int {
 	case "sessions":
 		return listSessions(out, errOut, home)
 	case "session":
+		if len(inv.Args) > 0 && inv.Args[0] == "resume" && tui.IsTerminal(tui.StdinFD()) && tui.IsTerminal(tui.StdoutFD()) {
+			next := inv
+			next.Command = "interactive"
+			next.Resume = "last"
+			if len(inv.Args) > 1 {
+				next.Resume = inv.Args[1]
+			}
+			return runInteractive(next, settings, home, cwd, in, out, errOut)
+		}
 		return sessionCommand(out, errOut, home, inv.Args)
 	case "config":
 		return configCommand(out, errOut, home, settings, inv.Args)
