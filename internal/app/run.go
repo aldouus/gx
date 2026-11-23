@@ -581,6 +581,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 		mode = string(perm.Default)
 	}
 	tr.SetStatus(model, mode, signedIn(home))
+	tr.SetPlace(cwd, "medium")
 	inbox := &agent.Mailbox{}
 	grants := &agent.Grants{}
 	grants.Bind(home, cwd)
@@ -729,7 +730,7 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 		if err := tr.Permission(name, detail); err != nil {
 			return agent.Deny, "", err
 		}
-		choice, note, err := tui.DecidePermission(os.Stdin, tr.SetPermission)
+		choice, note, err := tui.DecidePermission(os.Stdin, tr.SetPermissionAmend)
 		_ = tr.ClearPermission()
 		if err != nil {
 			return agent.Deny, note, err

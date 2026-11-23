@@ -9,7 +9,6 @@ import (
 const (
 	reset = "\x1b[0m"
 	dim   = "\x1b[38;5;245m"
-	divC  = "\x1b[38;5;240m"
 	bold  = "\x1b[1m"
 	rail  = "\x1b[38;5;255m"
 )
@@ -29,6 +28,8 @@ type Transcript struct {
 
 	model  string
 	mode   string
+	cwd    string
+	effort string
 	hasKey bool
 	busy   bool
 	ctrlC  bool
@@ -44,6 +45,7 @@ type Transcript struct {
 	ask       *ToolLine
 	askChoice int
 	askNote   string
+	askAmend  bool
 }
 
 func NewTranscript(out interface{ Write([]byte) (int, error) }, cols int) *Transcript {
@@ -57,6 +59,14 @@ func (t *Transcript) SetStatus(model, mode string, hasKey bool) {
 	t.model = model
 	t.mode = mode
 	t.hasKey = hasKey
+}
+
+// SetPlace records the workspace and effort shown in the footer.
+func (t *Transcript) SetPlace(cwd, effort string) {
+	t.cwd = cwd
+	if effort != "" {
+		t.effort = effort
+	}
 }
 
 func (t *Transcript) SetBusy(busy bool)   { t.busy = busy }
@@ -192,6 +202,12 @@ func (t *Transcript) Permission(name, detail string) error {
 
 // SetPermission updates the selected choice and the note while the prompt is open.
 func (t *Transcript) SetPermission(choice int, note string) error {
+	return t.SetPermissionAmend(choice, note, false)
+}
+
+// SetPermissionAmend updates the choice, the note, and whether tab has opened
+// the "tell fx" line.
+func (t *Transcript) SetPermissionAmend(choice int, note string, amend bool) error {
 	if t.ask == nil {
 		return nil
 	}
@@ -203,6 +219,7 @@ func (t *Transcript) SetPermission(choice int, note string) error {
 	}
 	t.askChoice = choice
 	t.askNote = note
+	t.askAmend = amend
 	return t.Paint()
 }
 
@@ -211,6 +228,7 @@ func (t *Transcript) ClearPermission() error {
 	t.ask = nil
 	t.askChoice = 0
 	t.askNote = ""
+	t.askAmend = false
 	return t.Paint()
 }
 
@@ -248,31 +266,77 @@ func (t *Transcript) frame() Frame {
 		}
 	}
 	if t.ask != nil {
-		rows = append(rows, bold+"Allow "+t.ask.Name+"?"+reset)
-		rows = append(rows, "  "+width.Clip(oneLine(t.ask.Detail), t.cols-2))
-		labels := []string{"1. Allow once", "2. Allow always", "3. Deny"}
-		for i, label := range labels {
-			if i == t.askChoice {
-				rows = append(rows, bold+"  "+label+reset)
-			} else {
-				rows = append(rows, dim+"  "+label+reset)
-			}
-		}
-		if t.askNote != "" {
-			rows = append(rows, "  "+width.Clip(t.askNote, t.cols-2))
-		} else {
-			rows = append(rows, dim+"  enter confirms · type a note"+reset)
-		}
+		return t.permissionFrame(rows)
 	}
-	rows = append(rows, divC+strings.Repeat("─", t.cols)+reset)
 	inputRow := len(rows)
 	rows = append(rows, t.inputRow())
 	rows = append(rows, t.hintRow())
-	col := 3 + width.String(t.input[:t.cursor])
+	col := width.String(composerMark) + width.String(t.input[:t.cursor]) + 1
 	if col < 1 {
 		col = 1
 	}
 	return Frame{Rows: rows, CursorRow: inputRow, CursorCol: col}
+}
+
+const composerMark = "┃ "
+
+func (t *Transcript) permissionFrame(rows []string) Frame {
+	rows = append(rows, bold+"Allow "+t.ask.Name+"?"+reset)
+	if t.ask.Detail != "" {
+		rows = append(rows, dim+"  "+width.Clip(oneLine(t.ask.Detail), t.cols-2)+reset)
+	}
+	labels := t.choiceLabels()
+	choiceRow := len(rows)
+	for i, label := range labels {
+		mark := "  "
+		if i == t.askChoice {
+			mark = composerMark
+			rows = append(rows, bold+mark+label+reset)
+			continue
+		}
+		rows = append(rows, dim+mark+label+reset)
+	}
+	noteRow := len(rows)
+	if t.askAmend || t.askNote != "" {
+		rows = append(rows, t.noteRow())
+	}
+	rows = append(rows, t.permissionHint())
+	cursorRow := choiceRow + t.askChoice
+	cursorCol := width.String(composerMark) + 1
+	if t.askAmend || t.askNote != "" {
+		cursorRow = noteRow
+		cursorCol = width.String(composerMark) + width.String(t.askNote) + 1
+	}
+	return Frame{Rows: rows, CursorRow: cursorRow, CursorCol: cursorCol}
+}
+
+func (t *Transcript) choiceLabels() []string {
+	labels := []string{"1. Allow once", "2. Allow always", "3. Deny"}
+	if t.askAmend || t.askNote != "" {
+		switch t.askChoice {
+		case 0:
+			labels[0] = "1. Yes, and tell fx what to do next"
+		case 2:
+			labels[2] = "3. No, and tell fx what to do differently"
+		}
+	}
+	return labels
+}
+
+func (t *Transcript) noteRow() string {
+	shown := t.askNote
+	if shown == "" {
+		placeholder := "and tell fx what to do next"
+		if t.askChoice == 2 {
+			placeholder = "and tell fx what to do differently"
+		}
+		return composerMark + dim + placeholder + reset
+	}
+	return composerMark + shown + "\x1b[7m \x1b[0m"
+}
+
+func (t *Transcript) permissionHint() string {
+	return dim + width.Clip("1-3 choose   arrows move   tab amend   enter confirm   y once   n deny", t.cols) + reset
 }
 
 func (t *Transcript) inputRow() string {
@@ -281,7 +345,7 @@ func (t *Transcript) inputRow() string {
 	if cur > len(shown) {
 		cur = len(shown)
 	}
-	return "❯ " + shown[:cur] + "\x1b[7m \x1b[0m" + shown[cur:]
+	return composerMark + shown[:cur] + "\x1b[7m \x1b[0m" + shown[cur:]
 }
 
 func (t *Transcript) hintRow() string {
@@ -298,6 +362,20 @@ func (t *Transcript) hintRow() string {
 	if t.model != "" {
 		left = append(left, t.model)
 	}
+	left = append(left, t.contextLabel())
+	if t.cwd != "" {
+		left = append(left, shortPath(t.cwd))
+	}
+	effort := t.effort
+	if effort == "" {
+		effort = "medium"
+	}
+	left = append(left, effort)
+	activity := "idle"
+	if t.busy {
+		activity = "working"
+	}
+	left = append(left, activity)
 	text := strings.Join(left, " · ")
 	right := ""
 	if t.busy {
@@ -342,6 +420,52 @@ func wrapPlain(text string, cols int) []string {
 		return []string{""}
 	}
 	return lines
+}
+
+func (t *Transcript) contextLabel() string {
+	n := len(t.live)
+	for _, line := range t.archive {
+		n += len(line)
+	}
+	tokens := n / 4
+	if tokens >= 1000 {
+		whole := tokens / 1000
+		frac := (tokens % 1000) / 100
+		return itoa(whole) + "." + itoa(frac) + "k"
+	}
+	return itoa(tokens)
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [16]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[i:])
+}
+
+func shortPath(path string) string {
+	path = strings.TrimRight(path, "/")
+	if path == "" {
+		return "/"
+	}
+	if width.String(path) <= 24 {
+		return path
+	}
+	base := path
+	if i := strings.LastIndex(path, "/"); i >= 0 && i < len(path)-1 {
+		base = path[i+1:]
+	}
+	if base == "" {
+		return width.Clip(path, 24)
+	}
+	return width.Clip(base, 24)
 }
 
 func oneLine(s string) string {

@@ -131,6 +131,73 @@ func TestDetailShowsToolOutput(t *testing.T) {
 	}
 }
 
+func TestFooterChrome(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewTranscript(&buf, 80)
+	tr.SetStatus("demo", "ask", true)
+	tr.SetPlace("/work/gx", "high")
+	tr.SetInput("next", 4)
+	if err := tr.Paint(); err != nil {
+		t.Fatal(err)
+	}
+	plain := strip(buf.String())
+	if strings.Contains(plain, "❯") {
+		t.Fatal("composer still uses the old prompt")
+	}
+	if !strings.Contains(plain, "┃ next") {
+		t.Fatalf("composer %s", plain)
+	}
+	if strings.Contains(plain, "─") {
+		t.Fatal("idle chrome drew a rule")
+	}
+	for _, want := range []string{"ask", "demo", "gx", "high", "idle", "0"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("hint missing %s\n%s", want, plain)
+		}
+	}
+	tr.SetBusy(true)
+	if err := tr.Paint(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strip(buf.String()), "working") {
+		t.Fatal(strip(buf.String()))
+	}
+}
+
+func TestPermissionFooterAndKeys(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewTranscript(&buf, 80)
+	if err := tr.Permission("shell", "echo hi"); err != nil {
+		t.Fatal(err)
+	}
+	plain := strip(buf.String())
+	if !strings.Contains(plain, "Allow shell?") || !strings.Contains(plain, "1. Allow once") {
+		t.Fatalf("footer %s", plain)
+	}
+	if strings.Contains(plain, "❯") || strings.Contains(plain, "─") {
+		t.Fatal("permission chrome used the idle composer")
+	}
+	choice, note, err := DecidePermission(strings.NewReader("\x1b[B\x1b[B\tnope\n"), tr.SetPermissionAmend)
+	if err != nil || choice != 2 || note != "nope" {
+		t.Fatalf("choice %d note %q err %v", choice, note, err)
+	}
+	if !strings.Contains(strip(buf.String()), "No, and tell fx what to do differently") {
+		t.Fatal(strip(buf.String()))
+	}
+	choice, note, err = DecidePermission(strings.NewReader("\tyes please\n"), nil)
+	if err != nil || choice != 0 || note != "yes please" {
+		t.Fatalf("amend choice %d note %q err %v", choice, note, err)
+	}
+	choice, _, err = DecidePermission(strings.NewReader("y"), nil)
+	if err != nil || choice != 0 {
+		t.Fatalf("y choice %d err %v", choice, err)
+	}
+	choice, note, err = DecidePermission(strings.NewReader("nay\n"), nil)
+	if err != nil || choice != 2 || note != "" {
+		t.Fatalf("n before typing choice %d note %q", choice, note)
+	}
+}
+
 func TestPermissionNote(t *testing.T) {
 	choice, note, err := DecidePermission(strings.NewReader("2keep the test\n"), nil)
 	if err != nil || choice != 1 || note != "keep the test" {
