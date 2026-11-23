@@ -500,14 +500,14 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 		inbox = &agent.Mailbox{}
 	}
 	r := &agent.Runner{
-		Provider:  prov,
-		Tools:     reg,
-		Mode:      mode,
-		Model:     model,
-		Session:   sess,
-		Inbox:  inbox,
-		Images: inv.Images,
-		Extra:  extra,
+		Provider: prov,
+		Tools:    reg,
+		Mode:     mode,
+		Model:    model,
+		Session:  sess,
+		Inbox:    inbox,
+		Images:   inv.Images,
+		Extra:    extra,
 		Approve: func(ctx context.Context, name, detail string) (agent.Verdict, string, error) {
 			if approve != nil {
 				return approve(ctx, name, detail)
@@ -615,7 +615,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 		tr.SetCtrlC(comp.Armed)
 		tr.SetInput(comp.Line, comp.Pos)
 		if act.Submit != "" {
-			err := handleSubmit(inv, settings, home, cwd, tr, errOut, act.Submit, &continued, inbox, grants, &images)
+			err := handleSubmit(inv, &settings, home, cwd, tr, errOut, act.Submit, &continued, inbox, grants, &images)
 			if err == errQuit {
 				return 0
 			}
@@ -630,7 +630,10 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 	}
 }
 
-func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr *tui.Transcript, errOut io.Writer, line string, continued *bool, inbox *agent.Mailbox, grants *agent.Grants, images *[]string) error {
+func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, tr *tui.Transcript, errOut io.Writer, line string, continued *bool, inbox *agent.Mailbox, grants *agent.Grants, images *[]string) error {
+	if settings == nil {
+		settings = &config.File{}
+	}
 	if name, rest, ok := cli.MatchSlash(line); strings.HasPrefix(strings.TrimSpace(line), "/") {
 		if !ok {
 			return tr.User("unknown command /" + name)
@@ -648,14 +651,14 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 					return tr.User("permission mode is ask, auto, or full-access")
 				}
 				settings.PermissionMode = rest
-				_ = config.Save(home, settings)
+				_ = config.Save(home, *settings)
 				tr.SetStatus(inv.Model, rest, signedIn(home))
 			}
 			return tr.User("permission mode " + settings.PermissionMode)
 		case "model":
 			if rest != "" {
 				settings.Model = rest
-				_ = config.Save(home, settings)
+				_ = config.Save(home, *settings)
 				tr.SetStatus(rest, settings.PermissionMode, signedIn(home))
 			}
 			return tr.User("model " + settings.Model)
@@ -663,7 +666,7 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 			*continued = false
 			return tr.User("cleared")
 		case "status":
-			return tr.User(statusLine(inv, settings, cwd))
+			return tr.User(statusLine(inv, *settings, cwd))
 		case "shell":
 			return tr.User(shellSlash(rest))
 		case "allowlist":
@@ -673,9 +676,9 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 		case "quit", "exit":
 			return errQuit
 		case "login":
-			return loginSlash(home, rest, tr, inv, settings)
+			return loginSlash(home, rest, tr, inv, *settings)
 		case "logout":
-			return logoutSlash(home, rest, tr, inv, settings)
+			return logoutSlash(home, rest, tr, inv, *settings)
 		case "image":
 			return attachImage(cwd, rest, images, tr)
 		case "images":
@@ -683,7 +686,7 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 		case "skills":
 			return tr.User(skillList(cwd, home))
 		case "mcp":
-			return tr.User(mcpList(settings))
+			return tr.User(mcpSlash(home, settings, rest))
 		case "agents":
 			return tr.User(agentList(inbox))
 		case "resume":
@@ -700,7 +703,7 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 			}
 			return tr.User(text)
 		case "compact":
-			return tr.User(compactSession(inv, settings, home, cwd, continued))
+			return tr.User(compactSession(inv, *settings, home, cwd, continued))
 		default:
 			return tr.User("/" + name + " is not available yet")
 		}
@@ -740,7 +743,7 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 			return agent.Deny, note, nil
 		}
 	}
-	_, err := execute(context.Background(), next, settings, home, cwd, line, errOut, true, approve, func(ev agent.Event) {
+	_, err := execute(context.Background(), next, *settings, home, cwd, line, errOut, true, approve, func(ev agent.Event) {
 		switch ev.Kind {
 		case "text":
 			_ = tr.Token(ev.Text)
@@ -860,6 +863,109 @@ func skillList(cwd, home string) string {
 		fmt.Fprintf(&b, "%s  %s\n", sk.Name, sk.Description)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func mcpSlash(home string, settings *config.File, rest string) string {
+	if settings == nil {
+		settings = &config.File{}
+	}
+	fields := strings.Fields(rest)
+	if len(fields) == 0 || fields[0] == "list" {
+		return mcpList(*settings)
+	}
+	switch fields[0] {
+	case "show":
+		if len(fields) != 2 {
+			return "usage: /mcp show NAME"
+		}
+		return mcpShow(*settings, fields[1])
+	case "add":
+		srv, err := parseMCPAdd(fields[1:])
+		if err != nil {
+			return err.Error()
+		}
+		settings.MCPServers = upsertMCP(settings.MCPServers, srv)
+		if err := config.Save(home, *settings); err != nil {
+			return err.Error()
+		}
+		return "added " + srv.Name
+	case "remove":
+		if len(fields) != 2 {
+			return "usage: /mcp remove NAME"
+		}
+		next, ok := removeMCP(settings.MCPServers, fields[1])
+		if !ok {
+			return "no mcp server " + fields[1]
+		}
+		settings.MCPServers = next
+		if err := config.Save(home, *settings); err != nil {
+			return err.Error()
+		}
+		return "removed " + fields[1]
+	default:
+		return "usage: /mcp [list|show|add|remove]"
+	}
+}
+
+func mcpShow(settings config.File, name string) string {
+	for _, s := range settings.MCPServers {
+		if s.Name != name {
+			continue
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "name  %s\n", s.Name)
+		if s.URL != "" {
+			fmt.Fprintf(&b, "url  %s\n", s.URL)
+		}
+		if s.Command != "" {
+			fmt.Fprintf(&b, "command  %s\n", s.Command)
+		}
+		if len(s.Args) > 0 {
+			fmt.Fprintf(&b, "args  %s\n", strings.Join(s.Args, " "))
+		}
+		return strings.TrimRight(b.String(), "\n")
+	}
+	return "no mcp server " + name
+}
+
+func parseMCPAdd(args []string) (config.MCPServer, error) {
+	if len(args) < 2 {
+		return config.MCPServer{}, fmt.Errorf("usage: /mcp add NAME URL | /mcp add NAME -- COMMAND [args...]")
+	}
+	name := args[0]
+	if args[1] == "--" {
+		if len(args) < 3 {
+			return config.MCPServer{}, fmt.Errorf("usage: /mcp add NAME -- COMMAND [args...]")
+		}
+		return config.MCPServer{Name: name, Command: args[2], Args: append([]string{}, args[3:]...)}, nil
+	}
+	if strings.Contains(args[1], "://") {
+		return config.MCPServer{Name: name, URL: args[1]}, nil
+	}
+	return config.MCPServer{Name: name, Command: args[1], Args: append([]string{}, args[2:]...)}, nil
+}
+
+func upsertMCP(list []config.MCPServer, srv config.MCPServer) []config.MCPServer {
+	for i, s := range list {
+		if s.Name == srv.Name {
+			list[i] = srv
+			return list
+		}
+	}
+	return append(list, srv)
+}
+
+func removeMCP(list []config.MCPServer, name string) ([]config.MCPServer, bool) {
+	var next []config.MCPServer
+	found := false
+	for _, s := range list {
+		if s.Name == name {
+			found = true
+			continue
+		}
+		next = append(next, s)
+	}
+	return next, found
 }
 
 func mcpList(settings config.File) string {

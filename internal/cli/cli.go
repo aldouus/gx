@@ -278,7 +278,7 @@ var SlashCommands = []Slash{
 	{"new", "Start a fresh session"},
 	{"reset", "Reset the current session"},
 	{"skills", "List discovered skills"},
-	{"mcp", "List MCP servers"},
+	{"mcp", "List, show, add, or remove MCP servers"},
 	{"agents", "List subagents"},
 	{"status", "Show the model, permission mode, and workspace"},
 	{"shell", "Reload shell startup files"},

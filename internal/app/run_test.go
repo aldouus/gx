@@ -111,7 +111,7 @@ func TestAllowlistSlashPersists(t *testing.T) {
 	grants := &agent.Grants{}
 	grants.Bind(home, cwd)
 	line := "/allowlist global add web_fetch https://example.com"
-	if err := handleSubmit(cli.Invocation{}, config.File{}, home, cwd, tr, &buf, line, nil, nil, grants, nil); err != nil {
+	if err := handleSubmit(cli.Invocation{}, &config.File{}, home, cwd, tr, &buf, line, nil, nil, grants, nil); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(agent.GlobalAllowlist(home))
@@ -125,28 +125,28 @@ func TestAllowlistSlashPersists(t *testing.T) {
 		t.Fatal("grant was not consulted")
 	}
 	buf.Reset()
-	if err := handleSubmit(cli.Invocation{}, config.File{}, home, cwd, tr, &buf, "/allowlist view global", nil, nil, grants, nil); err != nil {
+	if err := handleSubmit(cli.Invocation{}, &config.File{}, home, cwd, tr, &buf, "/allowlist view global", nil, nil, grants, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), "web_fetch") || !strings.Contains(buf.String(), "https://example.com") {
 		t.Fatal(buf.String())
 	}
 	buf.Reset()
-	if err := handleSubmit(cli.Invocation{}, config.File{}, home, cwd, tr, &buf, "/allowlist global remove web_fetch https://example.com", nil, nil, grants, nil); err != nil {
+	if err := handleSubmit(cli.Invocation{}, &config.File{}, home, cwd, tr, &buf, "/allowlist global remove web_fetch https://example.com", nil, nil, grants, nil); err != nil {
 		t.Fatal(err)
 	}
 	if grants.Allows("web_fetch", "https://example.com") {
 		t.Fatal("removed grant still allowed")
 	}
 	buf.Reset()
-	if err := handleSubmit(cli.Invocation{}, config.File{}, home, cwd, tr, &buf, "/allowlist workspace add shell ls", nil, nil, grants, nil); err != nil {
+	if err := handleSubmit(cli.Invocation{}, &config.File{}, home, cwd, tr, &buf, "/allowlist workspace add shell ls", nil, nil, grants, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(agent.WorkspaceAllowlist(cwd)); err != nil {
 		t.Fatal(err)
 	}
 	buf.Reset()
-	if err := handleSubmit(cli.Invocation{}, config.File{}, home, cwd, tr, &buf, "/allowlist workspace reset", nil, nil, grants, nil); err != nil {
+	if err := handleSubmit(cli.Invocation{}, &config.File{}, home, cwd, tr, &buf, "/allowlist workspace reset", nil, nil, grants, nil); err != nil {
 		t.Fatal(err)
 	}
 	list, err := agent.ListGrants(agent.ScopeWorkspace, home, cwd)
@@ -161,14 +161,14 @@ func TestAllowlistSlashPersists(t *testing.T) {
 func TestShellReloadSlash(t *testing.T) {
 	var buf bytes.Buffer
 	tr := tui.NewTranscript(&buf, 80)
-	if err := handleSubmit(cli.Invocation{}, config.File{}, t.TempDir(), t.TempDir(), tr, &buf, "/shell", nil, nil, nil, nil); err != nil {
+	if err := handleSubmit(cli.Invocation{}, &config.File{}, t.TempDir(), t.TempDir(), tr, &buf, "/shell", nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), "usage: /shell reload") {
 		t.Fatal(buf.String())
 	}
 	buf.Reset()
-	if err := handleSubmit(cli.Invocation{}, config.File{}, t.TempDir(), t.TempDir(), tr, &buf, "/shell reload", nil, nil, nil, nil); err != nil {
+	if err := handleSubmit(cli.Invocation{}, &config.File{}, t.TempDir(), t.TempDir(), tr, &buf, "/shell reload", nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), "shell snapshot cleared") {
@@ -202,7 +202,7 @@ func TestForkSlashContinuesInTheCopy(t *testing.T) {
 	continued := true
 	var buf bytes.Buffer
 	tr := tui.NewTranscript(&buf, 80)
-	if err := handleSubmit(cli.Invocation{}, config.File{}, home, "/work", tr, &buf, "/fork", &continued, nil, nil, nil); err != nil {
+	if err := handleSubmit(cli.Invocation{}, &config.File{}, home, "/work", tr, &buf, "/fork", &continued, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, err := session.Remembered(home)
