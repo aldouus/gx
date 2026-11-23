@@ -102,6 +102,24 @@ func TestAttachImage(t *testing.T) {
 	}
 }
 
+func TestShellReloadSlash(t *testing.T) {
+	var buf bytes.Buffer
+	tr := tui.NewTranscript(&buf, 80)
+	if err := handleSubmit(cli.Invocation{}, config.File{}, t.TempDir(), t.TempDir(), tr, &buf, "/shell", nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "usage: /shell reload") {
+		t.Fatal(buf.String())
+	}
+	buf.Reset()
+	if err := handleSubmit(cli.Invocation{}, config.File{}, t.TempDir(), t.TempDir(), tr, &buf, "/shell reload", nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "shell snapshot cleared") {
+		t.Fatal(buf.String())
+	}
+}
+
 func TestForkSlashContinuesInTheCopy(t *testing.T) {
 	home := t.TempDir()
 	s, err := session.Create(home, "/work")

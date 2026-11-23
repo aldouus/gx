@@ -662,6 +662,8 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 			return tr.User("cleared")
 		case "status":
 			return tr.User(statusLine(inv, settings, cwd))
+		case "shell":
+			return tr.User(shellSlash(rest))
 		case "allowlist":
 			return tr.User(allowlistText(grants))
 		case "version":
@@ -962,6 +964,14 @@ func listImages(rest string, images *[]string, tr *tui.Transcript) error {
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+func shellSlash(rest string) string {
+	if rest != "reload" {
+		return "usage: /shell reload"
+	}
+	tool.ResetSnapshot()
+	return "shell snapshot cleared"
+}
 
 func statusLine(inv cli.Invocation, settings config.File, cwd string) string {
 	model, _, _ := resolveModel(inv, settings)

@@ -35,6 +35,10 @@ func resetSnapshot() {
 	snapMu.Unlock()
 }
 
+// ResetSnapshot drops the cached login-shell generation. The next
+// user-profile command captures startup files again.
+func ResetSnapshot() { resetSnapshot() }
+
 func defaultResolveShell() string {
 	if s := loginShell(); s != "" {
 		return s

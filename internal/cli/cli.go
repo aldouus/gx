@@ -281,6 +281,7 @@ var SlashCommands = []Slash{
 	{"mcp", "List MCP servers"},
 	{"agents", "List subagents"},
 	{"status", "Show the model, permission mode, and workspace"},
+	{"shell", "Reload shell startup files"},
 	{"allowlist", "List commands allowed for this session"},
 	{"login", "Sign in to codex or grok"},
 	{"logout", "Sign out of codex or grok"},
