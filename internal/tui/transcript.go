@@ -48,6 +48,7 @@ type Transcript struct {
 	askNote       string
 	askAmend      bool
 	statusSeq     string
+	result        string
 	lastAssistant string
 	hideContext   bool
 	hideSession   bool
@@ -115,6 +116,18 @@ func (t *Transcript) SetPlace(cwd, effort string) {
 
 func (t *Transcript) SetBusy(busy bool) {
 	t.busy = busy
+	if busy {
+		t.result = ""
+	}
+	t.noteActivity()
+}
+
+// SetResult records how the last turn ended: done or error.
+func (t *Transcript) SetResult(state string) {
+	if t == nil {
+		return
+	}
+	t.result = state
 	t.noteActivity()
 }
 func (t *Transcript) SetCtrlC(armed bool) { t.ctrlC = armed }
@@ -328,6 +341,10 @@ func (t *Transcript) noteActivity() {
 		state, kind, msg = "blocked", "permission", t.ask.Name+" "+t.ask.Detail
 	case t.busy:
 		state = "working"
+	case t.result == "error":
+		state = "error"
+	case t.result == "done":
+		state = "done"
 	}
 	seq := ProgramStatus(state, kind, msg)
 	if seq == t.statusSeq {

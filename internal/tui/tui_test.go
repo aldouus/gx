@@ -221,6 +221,18 @@ func TestProgramStatus(t *testing.T) {
 	if !strings.Contains(buf.String(), "\x1b]7501;state=clear\x1b\\") {
 		t.Fatal("missing clear")
 	}
+	if err := tr.ClearPermission(); err != nil {
+		t.Fatal(err)
+	}
+	tr.SetBusy(false)
+	tr.SetResult("done")
+	if !strings.Contains(buf.String(), "\x1b]7501;state=done:app=fx\x1b\\") {
+		t.Fatal("missing done")
+	}
+	tr.SetResult("error")
+	if !strings.Contains(buf.String(), "\x1b]7501;state=error:app=fx\x1b\\") {
+		t.Fatal("missing error")
+	}
 }
 
 func TestImageBadge(t *testing.T) {
