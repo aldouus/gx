@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"gx/internal/cli"
+	"gx/internal/config"
+	"gx/internal/session"
 	"gx/internal/tui"
 )
 
@@ -96,5 +99,62 @@ func TestAttachImage(t *testing.T) {
 	}
 	if len(images) != 0 {
 		t.Fatalf("cleared: %v", images)
+	}
+}
+
+func TestForkSlashContinuesInTheCopy(t *testing.T) {
+	home := t.TempDir()
+	s, err := session.Create(home, "/work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.User("hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Assistant("hi"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	old := s.ID()
+	want := s.TranscriptText()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Remember(home, old); err != nil {
+		t.Fatal(err)
+	}
+	continued := true
+	var buf bytes.Buffer
+	tr := tui.NewTranscript(&buf, 80)
+	if err := handleSubmit(cli.Invocation{}, config.File{}, home, "/work", tr, &buf, "/fork", &continued, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := session.Remembered(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == "" || got == old {
+		t.Fatalf("remembered %q", got)
+	}
+	cp, err := session.Open(home, got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cp.Close()
+	if cp.TranscriptText() != want {
+		t.Fatalf("copy:\n%s", cp.TranscriptText())
+	}
+	src, err := session.Open(home, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	if src.TranscriptText() != want {
+		t.Fatal("old transcript changed")
+	}
+	if !continued {
+		t.Fatal("fork dropped the current session")
 	}
 }

@@ -689,6 +689,12 @@ func handleSubmit(inv cli.Invocation, settings config.File, home, cwd string, tr
 			}
 			*continued = true
 			return tr.User(text)
+		case "fork":
+			text, err := forkSession(home, continued)
+			if err != nil {
+				return tr.User(err.Error())
+			}
+			return tr.User(text)
 		case "compact":
 			return tr.User(compactSession(inv, settings, home, cwd, continued))
 		default:
@@ -979,6 +985,40 @@ func allowlistText(grants *agent.Grants) string {
 		fmt.Fprintf(&b, "%s  %s\n", g.Tool, g.Target)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func forkSession(home string, continued *bool) (string, error) {
+	if continued == nil || !*continued {
+		return "", fmt.Errorf("nothing to fork")
+	}
+	id, err := session.Remembered(home)
+	if err != nil {
+		return "", err
+	}
+	if id == "" {
+		return "", fmt.Errorf("nothing to fork")
+	}
+	src, err := session.Open(home, id)
+	if err != nil {
+		return "", err
+	}
+	dst, err := src.Copy()
+	srcErr := src.Close()
+	if err != nil {
+		return "", err
+	}
+	if srcErr != nil {
+		_ = dst.Close()
+		return "", srcErr
+	}
+	newID := dst.ID()
+	if err := dst.Close(); err != nil {
+		return "", err
+	}
+	if err := session.Remember(home, newID); err != nil {
+		return "", err
+	}
+	return "forked " + newID, nil
 }
 
 func resumeSession(home, rest string) (string, error) {

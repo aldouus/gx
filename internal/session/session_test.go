@@ -3,9 +3,81 @@ package session
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestCopyReplaysTranscript(t *testing.T) {
+	root := t.TempDir()
+	s, err := Create(root, "/work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.User("hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Assistant("hi there"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ToolCall("call-1", "shell", `{"command":"pwd"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ToolResult("call-1", "shell", "/work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	oldID := s.ID()
+	want := s.TranscriptText()
+	oldLog, err := os.ReadFile(filepath.Join(root, "sessions", oldID, "log.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp, err := s.Copy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cp.ID() == oldID {
+		t.Fatal("copy reused the source id")
+	}
+	if got := cp.TranscriptText(); got != want {
+		t.Fatalf("copy transcript:\n%s\nwant:\n%s", got, want)
+	}
+	if s.ID() != oldID || s.TranscriptText() != want {
+		t.Fatal("source session changed during copy")
+	}
+	if err := cp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(filepath.Join(root, "sessions", oldID, "log.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(oldLog) {
+		t.Fatal("old log bytes changed")
+	}
+	replayed, err := Open(root, cp.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replayed.Close()
+	if got := replayed.TranscriptText(); got != want {
+		t.Fatalf("replayed transcript:\n%s\nwant:\n%s", got, want)
+	}
+	src, err := Open(root, oldID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	if src.ID() != oldID || src.TranscriptText() != want {
+		t.Fatal("old id changed after reopen")
+	}
+}
 
 func TestCommitSurvivesClose(t *testing.T) {
 	root := t.TempDir()

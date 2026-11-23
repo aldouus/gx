@@ -130,6 +130,41 @@ func open(root, id string, create bool) (*Session, error) {
 
 func (s *Session) ID() string { return s.id }
 
+// Copy starts a new session whose log is this session's log, then returns it.
+// The receiver keeps its id and its bytes. The copy is a separate writer.
+func (s *Session) Copy() (*Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.file == nil {
+		return nil, fmt.Errorf("session is closed")
+	}
+	if err := s.file.Sync(); err != nil {
+		return nil, err
+	}
+	size, err := s.file.Seek(0, io.SeekEnd)
+	if err != nil {
+		return nil, err
+	}
+	body := make([]byte, size)
+	if size > 0 {
+		if _, err := s.file.ReadAt(body, 0); err != nil {
+			return nil, err
+		}
+	}
+	id, err := newID()
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(s.root, "sessions", id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "log.jsonl"), body, 0o600); err != nil {
+		return nil, err
+	}
+	return open(s.root, id, false)
+}
+
 func (s *Session) replay(create bool) error {
 	if _, err := s.file.Seek(0, io.SeekStart); err != nil {
 		return err
