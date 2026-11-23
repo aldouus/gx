@@ -567,6 +567,9 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 	if err != nil {
 		return "", err
 	}
+	if model == "" {
+		return "", fmt.Errorf("no model selected. Run /model")
+	}
 	mode := perm.Default
 	if settings.PermissionMode != "" {
 		if m, ok := perm.Parse(settings.PermissionMode); ok {
@@ -870,12 +873,7 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 			}
 			return tr.User("permission mode " + settings.PermissionMode)
 		case "model":
-			if rest != "" {
-				settings.Model = rest
-				_ = config.Save(home, *settings)
-				tr.SetStatus(rest, settings.PermissionMode, signedIn(home))
-			}
-			return tr.User("model " + settings.Model)
+			return modelSlash(home, rest, tr, inv, settings)
 		case "clear", "new", "reset":
 			*continued = false
 			return tr.User("cleared")
@@ -990,8 +988,10 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 	_, err := execute(context.Background(), next, *settings, home, cwd, line, errOut, true, approve, func(ev agent.Event) {
 		switch ev.Kind {
 		case "text":
+			_ = tr.CommitTools()
 			_ = tr.Token(ev.Text)
 		case "text_done":
+			_ = tr.CommitTools()
 			_ = tr.FinishText()
 		case "tool_start":
 			_ = tr.ToolStart(ev.Name, ev.Detail)
@@ -1006,6 +1006,7 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 	if err == nil && continued != nil {
 		*continued = true
 	}
+	_ = tr.CommitTools()
 	if err != nil {
 		tr.SetResult("error")
 	} else {
@@ -1027,7 +1028,7 @@ func resolveModel(inv cli.Invocation, settings config.File) (model, origin strin
 	if settings.Model != "" {
 		return settings.Model, "settings", nil
 	}
-	return "gpt-4o-mini", "default", nil
+	return "", "none", nil
 }
 
 func providerName(inv cli.Invocation, settings config.File) string {
@@ -1601,6 +1602,37 @@ func serviceTier(settings config.File) string {
 		return "priority"
 	}
 	return ""
+}
+
+func modelSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, settings *config.File) error {
+	if strings.TrimSpace(rest) != "" {
+		settings.Model = strings.TrimSpace(rest)
+		_ = config.Save(home, *settings)
+		tr.SetStatus(settings.Model, settings.PermissionMode, signedIn(home))
+		return tr.User("model " + settings.Model)
+	}
+	ids, err := listProviderModels(home, inv, *settings)
+	if err != nil {
+		return tr.User(err.Error())
+	}
+	if len(ids) == 0 {
+		return tr.User("no models. Run /login")
+	}
+	if err := tr.Menu("Model", ids); err != nil {
+		return err
+	}
+	sel, err := tui.DecideMenu(os.Stdin, len(ids), tr.SetMenu)
+	_ = tr.ClearMenu()
+	if err != nil {
+		return tr.User(err.Error())
+	}
+	if sel < 0 {
+		return tr.User("model cancelled")
+	}
+	settings.Model = ids[sel]
+	_ = config.Save(home, *settings)
+	tr.SetStatus(settings.Model, settings.PermissionMode, signedIn(home))
+	return tr.User("model " + settings.Model)
 }
 
 func loginSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, settings config.File) error {

@@ -31,7 +31,7 @@ func TestTranscriptOrderAndDiff(t *testing.T) {
 	plain := strip(buf.String())
 	iUser := strings.Index(plain, "hello")
 	iAsst := strings.Index(plain, "abc")
-	iTool := strings.Index(plain, "Running shell")
+	iTool := strings.Index(plain, "Ran echo hi")
 	iPerm := strings.Index(plain, "Allow shell?")
 	if iUser < 0 || iAsst < 0 || iTool < 0 || iPerm < 0 || !(iUser < iAsst && iAsst < iTool && iTool < iPerm) {
 		t.Fatalf("order user=%d asst=%d tool=%d perm=%d\n%s", iUser, iAsst, iTool, iPerm, plain)
@@ -169,7 +169,7 @@ func TestFooterChrome(t *testing.T) {
 	if strings.Contains(plain, "─") {
 		t.Fatal("idle chrome drew a rule")
 	}
-	for _, want := range []string{"ask", "demo", "gx", "high", "idle", "0"} {
+	for _, want := range []string{"ask", "demo", "high"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("hint missing %s\n%s", want, plain)
 		}
@@ -251,6 +251,33 @@ func TestProgramStatus(t *testing.T) {
 	tr.SetResult("error")
 	if !strings.Contains(buf.String(), "\x1b]7501;state=error:app=gx\x1b\\") {
 		t.Fatal("missing error")
+	}
+}
+
+func TestToolTreeStacks(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewTranscript(&buf, 80)
+	if err := tr.ToolStart("grep_files", `{"pattern":"List"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.ToolDone("grep_files", "handlers.go"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.ToolStart("read_file", `{"path":"handlers.go","start_line":690}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.ToolDone("read_file", "package"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.CommitTools(); err != nil {
+		t.Fatal(err)
+	}
+	plain := strip(buf.String())
+	if !strings.Contains(plain, "Searched, Read") || !strings.Contains(plain, "Searched List") || !strings.Contains(plain, "Read handlers.go") {
+		t.Fatal(plain)
+	}
+	if !strings.Contains(plain, "├") || !strings.Contains(plain, "└") {
+		t.Fatal(plain)
 	}
 }
 

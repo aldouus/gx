@@ -392,12 +392,12 @@ func authorizeURL(cfg providerConfig, authorize, redirect, challenge, state stri
 			[2]string{"id_token_add_organizations", "true"},
 			[2]string{"codex_cli_simplified_flow", "true"},
 			[2]string{"state", state},
-			[2]string{"originator", "gx"},
+			[2]string{"originator", "fx"},
 		)
 	case providerGrok:
 		pairs = append(pairs,
 			[2]string{"state", state},
-			[2]string{"referrer", "gx"},
+			[2]string{"referrer", "fx"},
 		)
 	}
 	return authorize + "?" + formBody(pairs...)

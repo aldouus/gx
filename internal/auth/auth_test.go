@@ -291,7 +291,7 @@ func TestLoginAgainstHTTPTest(t *testing.T) {
 		if q.Get("response_type") != "code" || q.Get("client_id") != codexClientID || q.Get("code_challenge_method") != "S256" {
 			t.Fatalf("query %s", q)
 		}
-		if q.Get("id_token_add_organizations") != "true" || q.Get("codex_cli_simplified_flow") != "true" || q.Get("originator") != "gx" {
+		if q.Get("id_token_add_organizations") != "true" || q.Get("codex_cli_simplified_flow") != "true" || q.Get("originator") != "fx" {
 			t.Fatalf("extra %s", q)
 		}
 		if q.Get("scope") != codexScope {
@@ -355,7 +355,7 @@ func TestLoginAgainstHTTPTest(t *testing.T) {
 
 		cred, authURL := driveLogin(t, t.TempDir(), providerGrok, "grok-code")
 		q := authURL.Query()
-		if authURL.Path != "/oauth2/authorize" || q.Get("referrer") != "gx" || q.Get("code_challenge_method") != "S256" {
+		if authURL.Path != "/oauth2/authorize" || q.Get("referrer") != "fx" || q.Get("code_challenge_method") != "S256" {
 			t.Fatalf("authorize %s", authURL)
 		}
 		if q.Get("client_id") != grokClientID || q.Get("scope") != grokScope {

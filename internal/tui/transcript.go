@@ -2,7 +2,9 @@ package tui
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"strings"
+	"time"
 
 	"gx/internal/width"
 )
@@ -47,6 +49,7 @@ type Transcript struct {
 	live          string
 	archive       []string
 	tools         []ToolLine
+	toolStart     time.Time
 	ask           *ToolLine
 	askChoice     int
 	askNote       string
@@ -352,6 +355,9 @@ func (t *Transcript) User(text string) error {
 // Token appends streamed assistant text. A finished line leaves the frame
 // and stays in scrollback.
 func (t *Transcript) Token(s string) error {
+	if err := t.CommitTools(); err != nil {
+		return err
+	}
 	t.live += s
 	if err := t.Paint(); err != nil {
 		return err
@@ -388,8 +394,25 @@ func (t *Transcript) FinishText() error {
 
 // ToolStart shows a running tool row.
 func (t *Transcript) ToolStart(name, detail string) error {
+	if len(t.tools) == 0 {
+		t.toolStart = time.Now()
+	}
 	t.tools = append(t.tools, ToolLine{Name: name, Detail: detail, Running: true})
 	return t.Paint()
+}
+
+// CommitTools writes the current tool tree into scrollback and clears it.
+func (t *Transcript) CommitTools() error {
+	if t == nil || len(t.tools) == 0 {
+		return nil
+	}
+	lines := t.toolTree()
+	if !t.toolStart.IsZero() {
+		lines = append(lines, "", dim+"  "+toolSummary(t.tools, time.Since(t.toolStart))+reset)
+	}
+	t.tools = nil
+	t.toolStart = time.Time{}
+	return t.screen.Commit(lines)
 }
 
 // ToolDone finishes the matching tool row.
@@ -500,27 +523,9 @@ func (t *Transcript) noteActivity() {
 func (t *Transcript) frame() Frame {
 	var rows []string
 	if t.live != "" {
-		rows = append(rows, wrapPlain(t.live, t.cols)...)
+		rows = append(rows, wrapPlain(indentText(t.live), t.cols)...)
 	}
-	for _, tool := range t.tools {
-		label := "Ran"
-		if tool.Running {
-			label = "Running"
-		}
-		rows = append(rows, dim+label+" "+tool.Name+"  "+width.Clip(oneLine(tool.Detail), t.cols-len(label)-len(tool.Name)-4)+reset)
-		if tool.Output != "" {
-			out := tool.Output
-			if !t.detail {
-				if i := strings.IndexByte(out, '\n'); i >= 0 {
-					out = out[:i]
-				}
-				out = width.Clip(out, t.cols-2)
-			}
-			for _, line := range strings.Split(out, "\n") {
-				rows = append(rows, dim+"  "+line+reset)
-			}
-		}
-	}
+	rows = append(rows, t.toolTree()...)
 	if t.ask != nil {
 		return t.permissionFrame(rows)
 	}
@@ -702,14 +707,6 @@ func (t *Transcript) hintRow() string {
 	if t.fast {
 		left = append(left, "\u26a1\ufe0e")
 	}
-	if !t.hideContext {
-		if label := t.contextLabel(); label != "0" {
-			left = append(left, label)
-		}
-	}
-	if t.cwd != "" && !t.hideWorkspace {
-		left = append(left, filepathBase(t.cwd))
-	}
 	text := strings.Join(left, " · ")
 	right := ""
 	if t.busy {
@@ -723,6 +720,169 @@ func (t *Transcript) hintRow() string {
 		text = text + strings.Repeat(" ", gap) + right
 	}
 	return dim + width.Clip(text, t.cols) + reset
+}
+
+func indentText(s string) string {
+	if s == "" {
+		return ""
+	}
+	parts := strings.Split(s, "\n")
+	for i, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
+		if !strings.HasPrefix(part, "  ") {
+			parts[i] = "  " + part
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func (t *Transcript) toolTree() []string {
+	if len(t.tools) == 0 {
+		return nil
+	}
+	var rows []string
+	rows = append(rows, "\u25cf "+toolHeadline(t.tools))
+	for i, tool := range t.tools {
+		branch := "\u251c "
+		if i == len(t.tools)-1 {
+			branch = "\u2514 "
+		}
+		rows = append(rows, branch+toolRow(tool))
+	}
+	return rows
+}
+
+func toolHeadline(tools []ToolLine) string {
+	var verbs []string
+	seen := map[string]bool{}
+	failed := 0
+	for _, tool := range tools {
+		if toolFailed(tool) {
+			failed++
+		}
+		verb := toolVerb(tool.Name)
+		if seen[verb] {
+			continue
+		}
+		seen[verb] = true
+		verbs = append(verbs, verb)
+	}
+	head := strings.Join(verbs, ", ")
+	if failed > 0 {
+		head += " \u00b7 " + itoa(failed) + " failed"
+	}
+	return head
+}
+
+func toolRow(tool ToolLine) string {
+	if toolFailed(tool) {
+		return "Failed " + width.Clip(oneLine(firstNonEmpty(tool.Output, tool.Detail)), 72)
+	}
+	switch tool.Name {
+	case "read_file":
+		return "Read " + readLabel(tool.Detail)
+	case "grep_files", "glob_files":
+		return "Searched " + width.Clip(searchTerms(tool.Detail), 72)
+	case "web_fetch":
+		return "Fetched " + width.Clip(jsonField(tool.Detail, "url"), 72)
+	default:
+		return toolVerb(tool.Name) + " " + width.Clip(oneLine(tool.Detail), 72)
+	}
+}
+
+func toolVerb(name string) string {
+	switch name {
+	case "read_file":
+		return "Read"
+	case "grep_files", "glob_files":
+		return "Searched"
+	case "write_file", "edit_file":
+		return "Edited"
+	case "web_fetch":
+		return "Fetched"
+	case "shell":
+		return "Ran"
+	default:
+		if name == "" {
+			return "Used"
+		}
+		return strings.ReplaceAll(name, "_", " ")
+	}
+}
+
+func toolFailed(tool ToolLine) bool {
+	if tool.Running || tool.Output == "" {
+		return false
+	}
+	low := strings.ToLower(tool.Output)
+	return strings.HasPrefix(low, "error") || strings.Contains(low, "failed") || strings.HasPrefix(low, "permission denied")
+}
+
+func toolSummary(tools []ToolLine, d time.Duration) string {
+	files := 0
+	for _, tool := range tools {
+		if tool.Name == "read_file" || tool.Name == "grep_files" || tool.Name == "glob_files" {
+			files++
+		}
+	}
+	what := "Ran " + itoa(len(tools)) + " tools"
+	if files > 0 {
+		what = "Explored " + itoa(files) + " files"
+	}
+	sec := int(d.Round(time.Second) / time.Second)
+	if sec < 1 {
+		sec = 1
+	}
+	return what + " \u00b7 " + itoa(sec) + "s"
+}
+
+func readLabel(detail string) string {
+	path := jsonField(detail, "path")
+	if path == "" {
+		path = oneLine(detail)
+	}
+	start := jsonField(detail, "start_line")
+	count := jsonField(detail, "line_count")
+	if start != "" {
+		path += " L" + start
+		if count != "" {
+			path += "-" + count
+		}
+	}
+	return width.Clip(path, 72)
+}
+
+func searchTerms(detail string) string {
+	if p := jsonField(detail, "pattern"); p != "" {
+		return p
+	}
+	return oneLine(detail)
+}
+
+func jsonField(raw, key string) string {
+	var m map[string]any
+	if json.Unmarshal([]byte(raw), &m) != nil {
+		return ""
+	}
+	switch v := m[key].(type) {
+	case string:
+		return v
+	case float64:
+		return itoa(int(v))
+	default:
+		return ""
+	}
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func wrap(text string, cols int) []string {
