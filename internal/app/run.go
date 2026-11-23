@@ -749,6 +749,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 	tr.SetStatus(model, mode, signedIn(home))
 	tr.SetPlace(cwd, settings.Effort)
 	tr.SetFast(settings.Fast)
+	tr.SetStatusLine(statusOn(settings.StatusContext, false), statusOn(settings.StatusSession, true), statusOn(settings.StatusSpace, false))
 	if !inv.Continue && inv.Resume == "" {
 		_ = tr.Welcome(cli.Version)
 	}
@@ -901,7 +902,7 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 		case "settings":
 			return settingsSlash(inv, settings, home, cwd, tr, errOut, continued, inbox, grants, images)
 		case "statusline":
-			return tr.User(tr.ToggleStatus(rest))
+			return statuslineSlash(home, settings, tr, rest)
 		case "launch":
 			return tr.User(launchInstance(rest))
 		case "close":
@@ -1662,6 +1663,75 @@ func slashMatches(cwd, home, line string) []tui.Completion {
 		out = append(out, tui.Completion{Label: sk.Name, Detail: sk.Description, Insert: sk.Name + " ", Skill: true})
 	}
 	return out
+}
+
+func statusOn(saved string, fallback bool) bool {
+	switch saved {
+	case "on":
+		return true
+	case "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func statuslineSlash(home string, settings *config.File, tr *tui.Transcript, rest string) error {
+	rest = strings.TrimSpace(rest)
+	if rest != "" {
+		msg := tr.ToggleStatus(rest)
+		saveStatusLine(home, settings, tr)
+		return tr.User(msg)
+	}
+	parts := []string{"context", "session", "workspace"}
+	names := []string{"Context", "Session", "Workspace"}
+	for {
+		shown := statusShown(tr)
+		items := make([]string, len(parts))
+		for i, name := range names {
+			state := "off"
+			if shown[i] {
+				state = "on"
+			}
+			items[i] = name + "  " + state
+		}
+		if err := tr.Menu("Status line", items); err != nil {
+			return err
+		}
+		sel, err := tui.DecideMenu(os.Stdin, len(items), tr.SetMenu)
+		_ = tr.ClearMenu()
+		if err != nil {
+			return tr.User(err.Error())
+		}
+		if sel < 0 {
+			return nil
+		}
+		_ = tr.ToggleStatus(parts[sel])
+		saveStatusLine(home, settings, tr)
+	}
+}
+
+func statusShown(tr *tui.Transcript) [3]bool {
+	context, session, workspace := tr.StatusLine()
+	return [3]bool{context, session, workspace}
+}
+
+func saveStatusLine(home string, settings *config.File, tr *tui.Transcript) {
+	if settings == nil {
+		return
+	}
+	context, session, workspace := tr.StatusLine()
+	settings.StatusContext = onOff(context)
+	settings.StatusSession = onOff(session)
+	settings.StatusSpace = onOff(workspace)
+	_ = config.Save(home, *settings)
+}
+
+func onOff(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
 }
 
 func agentsSlash(inbox *agent.Mailbox, tr *tui.Transcript) error {

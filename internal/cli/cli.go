@@ -285,7 +285,7 @@ var SlashCommands = []Slash{
 	{"effort", "Set the reasoning effort"},
 	{"fast", "Turn fast mode on or off"},
 	{"settings", "Show settings"},
-	{"statusline", "Toggle footer segments"},
+	{"statusline", "Choose footer segments"},
 	{"launch", "Start another gx instance"},
 	{"close", "Close this gx instance"},
 	{"mcp", "List, show, add, remove, log in, or approve MCP servers"},

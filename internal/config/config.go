@@ -21,6 +21,9 @@ type Settings struct {
 	Effort         string   `json:"effort,omitempty"`
 	Fast           bool     `json:"fast,omitempty"`
 	ExtraDirs      []string `json:"extra_dirs,omitempty"`
+	StatusContext  string   `json:"statusline_context,omitempty"`
+	StatusSession  string   `json:"statusline_session,omitempty"`
+	StatusSpace    string   `json:"statusline_workspace,omitempty"`
 }
 
 // Profile is an agent profile: tools, model, prompt, and permission mode.

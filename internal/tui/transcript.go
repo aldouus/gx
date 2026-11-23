@@ -109,6 +109,24 @@ func (t *Transcript) LastAssistant() string {
 	return t.lastAssistant
 }
 
+// SetStatusLine shows or hides each footer segment.
+func (t *Transcript) SetStatusLine(context, session, workspace bool) {
+	if t == nil {
+		return
+	}
+	t.hideContext = !context
+	t.hideSession = !session
+	t.hideWorkspace = !workspace
+}
+
+// StatusLine reports whether context, session, and workspace are shown.
+func (t *Transcript) StatusLine() (context, session, workspace bool) {
+	if t == nil {
+		return false, true, false
+	}
+	return !t.hideContext, !t.hideSession, !t.hideWorkspace
+}
+
 // ToggleStatus flips a footer segment: context, session, or workspace.
 func (t *Transcript) ToggleStatus(part string) string {
 	if t == nil {
@@ -126,6 +144,7 @@ func (t *Transcript) ToggleStatus(part string) string {
 	default:
 		return "usage: /statusline [context|session|workspace]"
 	}
+	_ = t.Paint()
 	return t.statusSummary()
 }
 
