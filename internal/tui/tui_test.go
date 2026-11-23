@@ -151,6 +151,40 @@ func TestDetailShowsToolOutput(t *testing.T) {
 	}
 }
 
+func TestToolSummaryAndPathLink(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewTranscript(&buf, 80)
+	if err := tr.ToolStart("shell", `{"command":"echo \"$HOME\""}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.ToolDone("shell", "ok"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.ToolStart("write_file", `{"path":"/Users/waites/Desktop/test.md","content":"blorp"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.ToolDone("write_file", "wrote"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.CommitTools(); err != nil {
+		t.Fatal(err)
+	}
+	plain := strip(buf.String())
+	if strings.Contains(plain, "{") || strings.Contains(plain, "content") {
+		t.Fatal(plain)
+	}
+	if !strings.Contains(plain, "Edited a file, ran a command") || !strings.Contains(plain, "Ran echo") || !strings.Contains(plain, "Edited test.md") {
+		t.Fatal(plain)
+	}
+	if !strings.Contains(buf.String(), "file:///Users/waites/Desktop/test.md") {
+		t.Fatal(buf.String())
+	}
+	linked := linkPaths("Created `/Users/waites/Desktop/test.md` with gibberish.")
+	if strings.Contains(linked, "`") || !strings.Contains(linked, "test.md") || !strings.Contains(linked, "file:///Users/waites/Desktop/test.md") {
+		t.Fatal(linked)
+	}
+}
+
 func TestThinkingBlinkMatchesFx(t *testing.T) {
 	start := time.Unix(0, 0)
 	if !thinkingBlink(start, start) || !thinkingBlink(start, start.Add(499*time.Millisecond)) {
@@ -244,7 +278,7 @@ func TestFooterChrome(t *testing.T) {
 	if err := tr.Paint(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strip(buf.String()), "working") {
+	if !strings.Contains(strip(buf.String()), "Thinking") {
 		t.Fatal(strip(buf.String()))
 	}
 	tr.SetBusy(false)
@@ -341,7 +375,7 @@ func TestToolTreeStacks(t *testing.T) {
 		t.Fatal(err)
 	}
 	plain := strip(buf.String())
-	if !strings.Contains(plain, "Searched, Read") || !strings.Contains(plain, "Searched List") || !strings.Contains(plain, "Read handlers.go") {
+	if !strings.Contains(plain, "Read a file, searched") || !strings.Contains(plain, "Searched List") || !strings.Contains(plain, "Read handlers.go") {
 		t.Fatal(plain)
 	}
 	if !strings.Contains(plain, "├") || !strings.Contains(plain, "└") {
@@ -552,6 +586,16 @@ func strip(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
 		if s[i] == 0x1b {
+			if i+1 < len(s) && s[i+1] == ']' {
+				i += 2
+				for i < len(s) && s[i] != 0x07 && !(s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\') {
+					i++
+				}
+				if i < len(s) && s[i] == 0x1b {
+					i++
+				}
+				continue
+			}
 			if i+1 < len(s) && s[i+1] == '[' {
 				i += 2
 				for i < len(s) && !(s[i] >= 0x40 && s[i] <= 0x7e) {

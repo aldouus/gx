@@ -586,7 +586,7 @@ func (t *Transcript) noteActivity() {
 func (t *Transcript) frame() Frame {
 	var rows []string
 	if t.live != "" {
-		rows = append(rows, wrapPlain(indentText(t.live), t.cols)...)
+		rows = append(rows, wrapPlain(indentText(linkPaths(t.live)), t.cols)...)
 	}
 	rows = append(rows, t.toolTree()...)
 	if t.ask != nil {
@@ -851,7 +851,7 @@ func assistantRows(s string, cols int) []string {
 	if s == "" {
 		return []string{""}
 	}
-	return wrapPlain(indentText(s), cols)
+	return wrapPlain(indentText(linkPaths(s)), cols)
 }
 
 func indentText(s string) string {
@@ -887,25 +887,56 @@ func (t *Transcript) toolTree() []string {
 }
 
 func toolHeadline(tools []ToolLine) string {
-	var verbs []string
-	seen := map[string]bool{}
-	failed := 0
+	edits, cmds, reads, searches, fetches, failed := 0, 0, 0, 0, 0, 0
 	for _, tool := range tools {
 		if toolFailed(tool) {
 			failed++
 		}
-		verb := toolVerb(tool.Name)
-		if seen[verb] {
-			continue
+		switch tool.Name {
+		case "write_file", "edit_file":
+			edits++
+		case "shell":
+			cmds++
+		case "read_file":
+			reads++
+		case "grep_files", "glob_files":
+			searches++
+		case "web_fetch":
+			fetches++
 		}
-		seen[verb] = true
-		verbs = append(verbs, verb)
 	}
-	head := strings.Join(verbs, ", ")
+	var parts []string
+	parts = append(parts, countPhrase(edits, "edited a file", "edited files")...)
+	parts = append(parts, countPhrase(cmds, "ran a command", "ran commands")...)
+	parts = append(parts, countPhrase(reads, "read a file", "read files")...)
+	parts = append(parts, countPhrase(searches, "searched", "searched")...)
+	parts = append(parts, countPhrase(fetches, "fetched a page", "fetched pages")...)
+	if len(parts) == 0 {
+		parts = append(parts, "ran "+itoa(len(tools))+" "+plural(len(tools), "tool", "tools"))
+	}
+	parts[0] = strings.ToUpper(parts[0][:1]) + parts[0][1:]
+	head := strings.Join(parts, ", ")
 	if failed > 0 {
 		head += " \u00b7 " + itoa(failed) + " failed"
 	}
 	return head
+}
+
+func countPhrase(n int, one, many string) []string {
+	if n == 0 {
+		return nil
+	}
+	if n == 1 {
+		return []string{one}
+	}
+	return []string{many}
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 func toolRow(tool ToolLine) string {
@@ -919,8 +950,12 @@ func toolRow(tool ToolLine) string {
 		return "Searched " + width.Clip(searchTerms(tool.Detail), 72)
 	case "web_fetch":
 		return "Fetched " + width.Clip(jsonField(tool.Detail, "url"), 72)
+	case "shell":
+		return "Ran " + width.Clip(commandText(tool.Detail), 72)
+	case "write_file", "edit_file":
+		return "Edited " + editLabel(tool.Detail)
 	default:
-		return toolVerb(tool.Name) + " " + width.Clip(oneLine(tool.Detail), 72)
+		return toolVerb(tool.Name) + " " + width.Clip(summaryText(tool.Detail), 72)
 	}
 }
 
@@ -959,7 +994,7 @@ func toolSummary(tools []ToolLine, d time.Duration) string {
 			files++
 		}
 	}
-	what := "Ran " + itoa(len(tools)) + " tools"
+	what := "Ran " + itoa(len(tools)) + " " + plural(len(tools), "tool", "tools")
 	if files > 0 {
 		what = "Explored " + itoa(files) + " files"
 	}
@@ -970,6 +1005,76 @@ func toolSummary(tools []ToolLine, d time.Duration) string {
 	return what + " \u00b7 " + itoa(sec) + "s"
 }
 
+func commandText(detail string) string {
+	if cmd := jsonField(detail, "command"); cmd != "" {
+		return oneLine(cmd)
+	}
+	return summaryText(detail)
+}
+
+func editLabel(detail string) string {
+	path := jsonField(detail, "path")
+	if path == "" {
+		return "a file"
+	}
+	return fileLink(filepathBase(path), path)
+}
+
+func summaryText(detail string) string {
+	if strings.HasPrefix(strings.TrimSpace(detail), "{") {
+		for _, key := range []string{"command", "path", "pattern", "url", "query"} {
+			if value := jsonField(detail, key); value != "" {
+				return oneLine(value)
+			}
+		}
+	}
+	return oneLine(detail)
+}
+
+func linkPaths(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] != '`' {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		j := strings.IndexByte(s[i+1:], '`')
+		if j < 0 {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		inner := s[i+1 : i+1+j]
+		if path, ok := codePath(inner); ok {
+			b.WriteString(fileLink(filepathBase(path), path))
+			i += j + 2
+			continue
+		}
+		b.WriteString(s[i : i+j+2])
+		i += j + 2
+	}
+	return b.String()
+}
+
+func codePath(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.ContainsAny(s, " \n\t") {
+		return "", false
+	}
+	if strings.HasPrefix(s, "/") || strings.HasPrefix(s, "~/") {
+		return s, true
+	}
+	return "", false
+}
+
+func fileLink(label, path string) string {
+	if path == "" {
+		return label
+	}
+	return "\x1b]8;;" + fileURL(path) + "\x1b\\" + label + "\x1b]8;;\x1b\\"
+}
+
 func readLabel(detail string) string {
 	path := jsonField(detail, "path")
 	if path == "" {
@@ -977,13 +1082,14 @@ func readLabel(detail string) string {
 	}
 	start := jsonField(detail, "start_line")
 	count := jsonField(detail, "line_count")
+	label := fileLink(filepathBase(path), path)
 	if start != "" {
-		path += " L" + start
+		label += " L" + start
 		if count != "" {
-			path += "-" + count
+			label += "-" + count
 		}
 	}
-	return width.Clip(path, 72)
+	return label
 }
 
 func searchTerms(detail string) string {
