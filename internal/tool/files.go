@@ -142,6 +142,7 @@ func (t writeFile) Run(_ context.Context, args json.RawMessage) (string, error) 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}
+	rememberUndo(path)
 	if err := os.WriteFile(path, []byte(in.Content), 0o644); err != nil {
 		return "", err
 	}
@@ -191,6 +192,7 @@ func (t editFile) Run(_ context.Context, args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("edit_file old_string appears %d times in %s", count, path)
 	}
 	next := stringsReplaceOnce(text, in.OldString, in.NewString)
+	rememberUndo(path)
 	if err := os.WriteFile(path, []byte(next), 0o644); err != nil {
 		return "", err
 	}
