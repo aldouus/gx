@@ -743,6 +743,9 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 	}
 	tr.SetStatus(model, mode, signedIn(home))
 	tr.SetPlace(cwd, "medium")
+	if !inv.Continue && inv.Resume == "" {
+		_ = tr.Welcome(cli.Version)
+	}
 	inbox := &agent.Mailbox{}
 	grants := &agent.Grants{}
 	grants.Bind(home, cwd)
@@ -834,7 +837,7 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 		case "allowlist":
 			return tr.User(allowlistCommand(home, cwd, rest, grants))
 		case "version":
-			return tr.User("fx " + cli.Version)
+			return tr.User("gx " + cli.Version)
 		case "quit", "exit":
 			return errQuit
 		case "login":

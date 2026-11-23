@@ -12,6 +12,10 @@ const (
 	dim   = "\x1b[38;5;245m"
 	bold  = "\x1b[1m"
 	rail  = "\x1b[38;5;255m"
+
+	// Logo is the welcome wordmark. The mathematical italic g is this port's
+	// mark. It is not fx's 𝒇x.
+	Logo = "\U0001D488x"
 )
 
 // ToolLine is one tool row in the frame.
@@ -193,6 +197,16 @@ func (t *Transcript) SetInput(line string, cursor int) {
 	t.cursor = cursor
 }
 
+// Welcome paints the gx wordmark once, above the first prompt.
+func (t *Transcript) Welcome(version string) error {
+	if version == "" {
+		version = "0.0.1"
+	}
+	line := bold + Logo + reset + dim + " v" + version + " · Run /help for commands" + reset
+	t.archive = append(t.archive, Logo+" v"+version)
+	return t.screen.Commit([]string{line, ""})
+}
+
 // User commits a person message into scrollback.
 func (t *Transcript) User(text string) error {
 	var lines []string
@@ -322,7 +336,7 @@ func ProgramStatus(state, kind, msg string) string {
 		b.WriteString(":kind=")
 		b.WriteString(kind)
 	}
-	b.WriteString(":app=fx")
+	b.WriteString(":app=gx")
 	if msg != "" {
 		b.WriteString(":msg=")
 		b.WriteString(base64.StdEncoding.EncodeToString([]byte(oneLine(msg))))
@@ -428,9 +442,9 @@ func (t *Transcript) choiceLabels() []string {
 	if t.askAmend || t.askNote != "" {
 		switch t.askChoice {
 		case 0:
-			labels[0] = "1. Yes, and tell fx what to do next"
+			labels[0] = "1. Yes, and tell gx what to do next"
 		case 2:
-			labels[2] = "3. No, and tell fx what to do differently"
+			labels[2] = "3. No, and tell gx what to do differently"
 		}
 	}
 	return labels
@@ -439,9 +453,9 @@ func (t *Transcript) choiceLabels() []string {
 func (t *Transcript) noteRow() string {
 	shown := t.askNote
 	if shown == "" {
-		placeholder := "and tell fx what to do next"
+		placeholder := "and tell gx what to do next"
 		if t.askChoice == 2 {
-			placeholder = "and tell fx what to do differently"
+			placeholder = "and tell gx what to do differently"
 		}
 		return composerMark + dim + placeholder + reset
 	}

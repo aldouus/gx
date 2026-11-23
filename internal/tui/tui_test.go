@@ -181,7 +181,7 @@ func TestPermissionFooterAndKeys(t *testing.T) {
 	if err != nil || choice != 2 || note != "nope" {
 		t.Fatalf("choice %d note %q err %v", choice, note, err)
 	}
-	if !strings.Contains(strip(buf.String()), "No, and tell fx what to do differently") {
+	if !strings.Contains(strip(buf.String()), "No, and tell gx what to do differently") {
 		t.Fatal(strip(buf.String()))
 	}
 	choice, note, err = DecidePermission(strings.NewReader("\tyes please\n"), nil)
@@ -204,17 +204,17 @@ func TestProgramStatus(t *testing.T) {
 	if err := tr.Paint(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "\x1b]7501;state=idle:app=fx\x1b\\") {
+	if !strings.Contains(buf.String(), "\x1b]7501;state=idle:app=gx\x1b\\") {
 		t.Fatal(buf.String())
 	}
 	tr.SetBusy(true)
-	if !strings.Contains(buf.String(), "\x1b]7501;state=working:app=fx\x1b\\") {
+	if !strings.Contains(buf.String(), "\x1b]7501;state=working:app=gx\x1b\\") {
 		t.Fatal("missing working")
 	}
 	if err := tr.Permission("shell", "git push"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "state=blocked:kind=permission:app=fx:msg=") {
+	if !strings.Contains(buf.String(), "state=blocked:kind=permission:app=gx:msg=") {
 		t.Fatal(buf.String())
 	}
 	tr.End()
@@ -226,12 +226,30 @@ func TestProgramStatus(t *testing.T) {
 	}
 	tr.SetBusy(false)
 	tr.SetResult("done")
-	if !strings.Contains(buf.String(), "\x1b]7501;state=done:app=fx\x1b\\") {
+	if !strings.Contains(buf.String(), "\x1b]7501;state=done:app=gx\x1b\\") {
 		t.Fatal("missing done")
 	}
 	tr.SetResult("error")
-	if !strings.Contains(buf.String(), "\x1b]7501;state=error:app=fx\x1b\\") {
+	if !strings.Contains(buf.String(), "\x1b]7501;state=error:app=gx\x1b\\") {
 		t.Fatal("missing error")
+	}
+}
+
+func TestWelcomeLogoIsGX(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewTranscript(&buf, 80)
+	if err := tr.Welcome("0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	plain := strip(buf.String())
+	if !strings.Contains(plain, Logo+" v0.0.1") {
+		t.Fatalf("logo missing: %s", plain)
+	}
+	if strings.Contains(plain, "𝒇x") || strings.Contains(buf.String(), "fx v") {
+		t.Fatal(plain)
+	}
+	if Logo != "\U0001D488x" {
+		t.Fatal(Logo)
 	}
 }
 
