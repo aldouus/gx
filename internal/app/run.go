@@ -914,12 +914,7 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 		case "agents":
 			return tr.User(agentList(inbox))
 		case "resume":
-			text, err := resumeSession(home, rest)
-			if err != nil {
-				return tr.User(err.Error())
-			}
-			*continued = true
-			return tr.User(text)
+			return resumeSlash(home, cwd, rest, tr, continued)
 		case "fork":
 			text, err := forkSession(home, continued)
 			if err != nil {
@@ -1961,31 +1956,127 @@ func forkSession(home string, continued *bool) (string, error) {
 	return "forked " + newID, nil
 }
 
-func resumeSession(home, rest string) (string, error) {
-	id := rest
-	if id == "" || id == "last" {
-		ids, err := session.List(home)
+func resumeSlash(home, cwd, rest string, tr *tui.Transcript, continued *bool) error {
+	rest = strings.TrimSpace(rest)
+	var id string
+	switch rest {
+	case "":
+		chats, err := session.Chats(home)
 		if err != nil {
-			return "", err
+			return tr.User(err.Error())
 		}
-		if len(ids) == 0 {
-			return "", fmt.Errorf("no session to resume")
+		chats = chatsHere(chats, cwd)
+		if len(chats) == 0 {
+			return tr.User("no session to resume")
+		}
+		if len(chats) > 20 {
+			chats = chats[:20]
+		}
+		items := make([]string, len(chats))
+		for i, chat := range chats {
+			items[i] = chat.Title + "  " + ago(chat.Updated)
+		}
+		if err := tr.Menu("Resume", items); err != nil {
+			return err
+		}
+		sel, err := tui.DecideMenu(os.Stdin, len(items), tr.SetMenu)
+		_ = tr.ClearMenu()
+		if err != nil {
+			return tr.User(err.Error())
+		}
+		if sel < 0 {
+			return tr.User("resume cancelled")
+		}
+		id = chats[sel].ID
+	case "last":
+		ids, err := session.List(home)
+		if err != nil || len(ids) == 0 {
+			return tr.User("no session to resume")
 		}
 		id = ids[0]
+	default:
+		id = rest
 	}
+	return switchSession(home, id, tr, continued)
+}
+
+func chatsHere(chats []session.Chat, cwd string) []session.Chat {
+	if cwd == "" {
+		return chats
+	}
+	var here []session.Chat
+	for _, chat := range chats {
+		if chat.Workspace == "" || chat.Workspace == cwd {
+			here = append(here, chat)
+		}
+	}
+	if len(here) == 0 {
+		return chats
+	}
+	return here
+}
+
+func ago(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
+func switchSession(home, id string, tr *tui.Transcript, continued *bool) error {
 	sess, err := session.Open(home, id)
 	if err != nil {
-		return "", err
+		return tr.User(err.Error())
 	}
-	text := sess.TranscriptText()
-	_ = sess.Close()
+	history := sess.History()
+	closeErr := sess.Close()
 	if err := session.Remember(home, id); err != nil {
-		return "", err
+		return tr.User(err.Error())
 	}
-	if strings.TrimSpace(text) == "" {
-		text = "resumed " + id
+	if closeErr != nil {
+		return tr.User(closeErr.Error())
 	}
-	return text, nil
+	if continued != nil {
+		*continued = true
+	}
+	if err := tr.ClearView(); err != nil {
+		return err
+	}
+	shown := false
+	for _, msg := range history {
+		switch msg.Role {
+		case "user":
+			if strings.TrimSpace(msg.Text) == "" {
+				continue
+			}
+			shown = true
+			if err := tr.User(msg.Text); err != nil {
+				return err
+			}
+		case "assistant":
+			if strings.TrimSpace(msg.Text) == "" {
+				continue
+			}
+			shown = true
+			if err := tr.ShowAssistant(msg.Text); err != nil {
+				return err
+			}
+		}
+	}
+	if !shown {
+		return tr.User("resumed " + id)
+	}
+	return nil
 }
 
 func compactSession(inv cli.Invocation, settings config.File, home, cwd string, continued *bool) string {

@@ -272,7 +272,7 @@ var SlashCommands = []Slash{
 	{"model", "Show or set the model"},
 	{"permissions", "Show or set ask, auto, or full-access"},
 	{"compact", "Compact the conversation"},
-	{"resume", "Resume a session"},
+	{"resume", "Show past chats and switch to one"},
 	{"fork", "Copy this session and continue in the copy"},
 	{"clear", "Start a fresh conversation"},
 	{"new", "Start a fresh session"},

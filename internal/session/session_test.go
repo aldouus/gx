@@ -234,3 +234,30 @@ func TestTornTailIsDropped(t *testing.T) {
 		t.Fatalf("lost committed turn:\n%s", text)
 	}
 }
+
+func TestChatsUsesFirstUserLine(t *testing.T) {
+	root := t.TempDir()
+	s, err := Create(root, "/work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.User("create a file on my desktop"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Assistant("done"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	chats, err := Chats(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chats) != 1 || chats[0].Title != "create a file on my desktop" || chats[0].Workspace != "/work" {
+		t.Fatalf("%+v", chats)
+	}
+}

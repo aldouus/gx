@@ -18,6 +18,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -636,6 +637,86 @@ func newID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b[:]), nil
+}
+
+// Chat is one resumable conversation for the picker.
+type Chat struct {
+	ID        string
+	Title     string
+	Workspace string
+	Updated   time.Time
+}
+
+// Chats lists conversations newest first. It reads logs without taking the
+// writer lock, so opening the picker does not interrupt a session.
+func Chats(root string) ([]Chat, error) {
+	ids, err := List(root)
+	if err != nil {
+		return nil, err
+	}
+	var chats []Chat
+	for _, id := range ids {
+		chats = append(chats, readChat(root, id))
+	}
+	return chats, nil
+}
+
+func readChat(root, id string) Chat {
+	chat := Chat{ID: id, Title: "Untitled session"}
+	if b, err := os.ReadFile(filepath.Join(root, "sessions", id, "title")); err == nil {
+		if title := strings.TrimSpace(string(b)); title != "" {
+			chat.Title = title
+		}
+	}
+	path := filepath.Join(root, "sessions", id, "log.jsonl")
+	info, err := os.Stat(path)
+	if err != nil {
+		return chat
+	}
+	chat.Updated = info.ModTime()
+	f, err := os.Open(path)
+	if err != nil {
+		return chat
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	titled := chat.Title != "Untitled session"
+	for sc.Scan() {
+		ev, err := parseLine(sc.Bytes())
+		if err != nil {
+			continue
+		}
+		if !ev.Time.IsZero() {
+			chat.Updated = ev.Time
+		}
+		switch ev.Kind {
+		case "session_created":
+			if chat.Workspace == "" {
+				chat.Workspace = textField(ev.Data, "workspace")
+			}
+		case "user_message":
+			if !titled {
+				if title := oneLineTitle(textField(ev.Data, "text")); title != "" {
+					chat.Title = title
+					titled = true
+				}
+			}
+		}
+	}
+	return chat
+}
+
+func oneLineTitle(text string) string {
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\n", " "))
+	if text == "" {
+		return ""
+	}
+	run := []rune(text)
+	if len(run) > 72 {
+		return string(run[:72]) + "…"
+	}
+	return text
 }
 
 // List returns session ids under root, newest directory first.

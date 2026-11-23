@@ -358,6 +358,31 @@ func splitLink(line string) (url, text string) {
 	return url, text
 }
 
+// ClearView wipes the visible transcript so a resumed chat can replace it.
+func (t *Transcript) ClearView() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.archive = nil
+	t.live = ""
+	t.tools = nil
+	t.opened = false
+	t.screen.Reset()
+	return t.screen.WriteRaw("\x1b[2J\x1b[H")
+}
+
+// ShowAssistant commits a finished reply into scrollback.
+func (t *Transcript) ShowAssistant(text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	lines := assistantRows(text, t.cols)
+	lines = append(lines, "")
+	t.archive = append(t.archive, text)
+	t.lastAssistant = text
+	return t.screen.Commit(lines)
+}
+
 // User commits a person message into scrollback.
 func (t *Transcript) User(text string) error {
 	var lines []string
