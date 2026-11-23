@@ -254,6 +254,22 @@ func TestProgramStatus(t *testing.T) {
 	}
 }
 
+func TestSignInLinkSurvivesWrap(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewTranscript(&buf, 40)
+	url := "https://auth.example/oauth?referrer=gx&code=abcdefghijklmnopqrstuvwxyz"
+	if err := tr.ShowSignIn("Open this URL to sign in with Grok:\n" + url + "\nWaiting for browser authorization...\n"); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if strings.Count(got, "\x1b]8;;"+url+"\x1b\\") < 2 {
+		t.Fatalf("wrapped url is not one link: %q", got)
+	}
+	if strings.Contains(got, "referrer=fx") {
+		t.Fatal(got)
+	}
+}
+
 func TestArrowSelectsSlashMenu(t *testing.T) {
 	var c Composer
 	c.Line = "/log"

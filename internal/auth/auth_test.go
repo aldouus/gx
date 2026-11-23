@@ -291,7 +291,7 @@ func TestLoginAgainstHTTPTest(t *testing.T) {
 		if q.Get("response_type") != "code" || q.Get("client_id") != codexClientID || q.Get("code_challenge_method") != "S256" {
 			t.Fatalf("query %s", q)
 		}
-		if q.Get("id_token_add_organizations") != "true" || q.Get("codex_cli_simplified_flow") != "true" || q.Get("originator") != "fx" {
+		if q.Get("id_token_add_organizations") != "true" || q.Get("codex_cli_simplified_flow") != "true" || q.Get("originator") != "gx" {
 			t.Fatalf("extra %s", q)
 		}
 		if q.Get("scope") != codexScope {
@@ -355,7 +355,7 @@ func TestLoginAgainstHTTPTest(t *testing.T) {
 
 		cred, authURL := driveLogin(t, t.TempDir(), providerGrok, "grok-code")
 		q := authURL.Query()
-		if authURL.Path != "/oauth2/authorize" || q.Get("referrer") != "fx" || q.Get("code_challenge_method") != "S256" {
+		if authURL.Path != "/oauth2/authorize" || q.Get("referrer") != "gx" || q.Get("code_challenge_method") != "S256" {
 			t.Fatalf("authorize %s", authURL)
 		}
 		if q.Get("client_id") != grokClientID || q.Get("scope") != grokScope {
@@ -501,6 +501,7 @@ func driveLogin(t *testing.T, root, provider, code string) (Credential, *url.URL
 		ch <- result{cred, err}
 	}()
 	raw := readAuthURL(t, pr)
+	go io.Copy(io.Discard, pr)
 	hitCallback(t, raw, code)
 	got := <-ch
 	_, _ = io.Copy(io.Discard, pr)
@@ -520,6 +521,9 @@ func readAuthURL(t *testing.T, r io.Reader) string {
 	for {
 		line, err := br.ReadString('\n')
 		trimmed := strings.TrimSpace(line)
+		if url, ok := oscLink(trimmed); ok {
+			return url
+		}
 		if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") {
 			return trimmed
 		}
@@ -527,6 +531,20 @@ func readAuthURL(t *testing.T, r io.Reader) string {
 			t.Fatalf("read authorize url: %v", err)
 		}
 	}
+}
+
+func oscLink(line string) (string, bool) {
+	const open = "\x1b]8;;"
+	i := strings.Index(line, open)
+	if i < 0 {
+		return "", false
+	}
+	rest := line[i+len(open):]
+	url, _, ok := strings.Cut(rest, "\x1b\\")
+	if !ok || !strings.HasPrefix(url, "http") {
+		return "", false
+	}
+	return url, true
 }
 
 func hitCallback(t *testing.T, authURL, code string) {

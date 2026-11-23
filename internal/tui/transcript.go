@@ -278,6 +278,64 @@ func (t *Transcript) Welcome(version string) error {
 	return t.screen.Commit([]string{line, ""})
 }
 
+// ShowSignIn prints a sign-in prompt. Every wrapped piece of the URL is a
+// link to the full address, so a click on any line opens the same page.
+func (t *Transcript) ShowSignIn(msg string) error {
+	for _, line := range strings.Split(msg, "\n") {
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") || strings.HasPrefix(line, "\x1b]8;;") {
+			if err := t.commitLinked(line); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := t.User(line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *Transcript) commitLinked(line string) error {
+	url, text := splitLink(line)
+	if url == "" {
+		url = text
+	}
+	cols := t.cols - 2
+	if cols < 16 {
+		cols = 16
+	}
+	var lines []string
+	rest := text
+	for rest != "" {
+		n := cols
+		if n > len(rest) {
+			n = len(rest)
+		}
+		chunk := rest[:n]
+		rest = rest[n:]
+		lines = append(lines, rail+"\u2503 "+reset+"\x1b]8;;"+url+"\x1b\\"+chunk+"\x1b]8;;\x1b\\")
+	}
+	t.archive = append(t.archive, text)
+	return t.screen.Commit(lines)
+}
+
+func splitLink(line string) (url, text string) {
+	const open = "\x1b]8;;"
+	if !strings.HasPrefix(line, open) {
+		return "", line
+	}
+	rest := line[len(open):]
+	url, rest, ok := strings.Cut(rest, "\x1b\\")
+	if !ok {
+		return "", line
+	}
+	text = strings.TrimSuffix(rest, "\x1b]8;;\x1b\\")
+	return url, text
+}
+
 // User commits a person message into scrollback.
 func (t *Transcript) User(text string) error {
 	var lines []string

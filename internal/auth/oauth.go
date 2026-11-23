@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -207,7 +209,11 @@ func Login(ctx context.Context, root, provider string, out io.Writer) (Credentia
 		<-serveDone
 	}()
 
-	msg := fmt.Sprintf("Open this URL to sign in with %s:\n%s\n\nWaiting for browser authorization...\n", cfg.label, authURL)
+	opened := false
+	if os.Getenv(envTestIssuer) == "" {
+		opened = openBrowser(authURL) == nil
+	}
+	msg := signInMessage(cfg.label, authURL, opened)
 	if _, err := io.WriteString(out, msg); err != nil {
 		return Credential{}, err
 	}
@@ -348,6 +354,29 @@ func parseCallback(target, expectedState, prefix string) (string, error) {
 	return code, nil
 }
 
+func signInMessage(label, authURL string, opened bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Open this URL to sign in with %s:\n%s\n", label, authURL)
+	if opened {
+		b.WriteString("Opened in your browser.\n")
+	}
+	b.WriteString("\nWaiting for browser authorization...\n")
+	return b.String()
+}
+
+func openBrowser(raw string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", raw)
+	case "linux":
+		cmd = exec.Command("xdg-open", raw)
+	default:
+		return fmt.Errorf("no browser opener")
+	}
+	return cmd.Start()
+}
+
 func authorizeURL(cfg providerConfig, authorize, redirect, challenge, state string) string {
 	pairs := [][2]string{
 		{"response_type", "code"},
@@ -363,12 +392,12 @@ func authorizeURL(cfg providerConfig, authorize, redirect, challenge, state stri
 			[2]string{"id_token_add_organizations", "true"},
 			[2]string{"codex_cli_simplified_flow", "true"},
 			[2]string{"state", state},
-			[2]string{"originator", "fx"},
+			[2]string{"originator", "gx"},
 		)
 	case providerGrok:
 		pairs = append(pairs,
 			[2]string{"state", state},
-			[2]string{"referrer", "fx"},
+			[2]string{"referrer", "gx"},
 		)
 	}
 	return authorize + "?" + formBody(pairs...)

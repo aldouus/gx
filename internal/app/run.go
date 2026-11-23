@@ -784,11 +784,15 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 		if act.Close {
 			slashClosed = true
 		}
-		if comp.Line != slashLine {
-			slashClosed = false
-			slashLine = comp.Line
+		query := comp.Line
+		if act.Submit != "" {
+			query = act.Submit
 		}
-		matches := slashMatches(cwd, home, comp.Line)
+		if query != slashLine {
+			slashClosed = false
+			slashLine = query
+		}
+		matches := slashMatches(cwd, home, query)
 		if slashClosed {
 			matches = nil
 		}
@@ -1624,7 +1628,7 @@ func loginSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, setti
 	var shown strings.Builder
 	_, err := auth.Login(ctx, home, name, writerFunc(func(p []byte) (int, error) {
 		shown.Write(p)
-		return len(p), tr.User(strings.TrimRight(shown.String(), "\n"))
+		return len(p), tr.ShowSignIn(shown.String())
 	}))
 	if err != nil {
 		return tr.User(err.Error())
