@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -857,20 +859,15 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 		}
 		switch name {
 		case "help":
-			var b strings.Builder
-			for _, c := range cli.SlashCommands {
-				fmt.Fprintf(&b, "/%s  %s\n", c.Name, c.Help)
-			}
-			return tr.User(strings.TrimRight(b.String(), "\n"))
+			return helpSlash(inv, settings, home, cwd, tr, errOut, continued, inbox, grants, images)
 		case "permissions":
 			return permissionSlash(home, rest, tr, settings)
 		case "model":
 			return modelSlash(home, rest, tr, inv, settings)
 		case "clear", "new", "reset":
-			*continued = false
-			return tr.User("cleared")
+			return freshSlash(name, home, tr, continued)
 		case "status":
-			return tr.User(statusLine(inv, *settings, cwd))
+			return tr.User(statusLine(inv, *settings, home, cwd))
 		case "shell":
 			return tr.User(shellSlash(rest))
 		case "allowlist":
@@ -888,21 +885,21 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 		case "images":
 			return listImages(rest, images, tr)
 		case "skills":
-			return tr.User(skillsSlash(cwd, home, rest))
+			return skillsSlash(cwd, home, rest, tr)
 		case "rename":
 			return tr.User(renameSession(home, rest))
 		case "workspace":
 			return tr.User(workspaceSlash(home, cwd, settings, rest))
 		case "copy":
-			return tr.User(copyLast(tr))
+			return copyLast(tr)
 		case "undo":
 			return tr.User(undoLast())
 		case "effort":
-			return tr.User(effortSlash(settings, tr, rest))
+			return effortSlash(home, settings, tr, inv, rest)
 		case "fast":
 			return tr.User(fastSlash(home, settings, tr, rest))
 		case "settings":
-			return tr.User(settingsSlash(settings))
+			return settingsSlash(inv, settings, home, cwd, tr, errOut, continued, inbox, grants, images)
 		case "statusline":
 			return tr.User(tr.ToggleStatus(rest))
 		case "launch":
@@ -912,7 +909,7 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 		case "mcp":
 			return tr.User(mcpSlash(home, settings, rest))
 		case "agents":
-			return tr.User(agentList(inbox))
+			return agentsSlash(inbox, tr)
 		case "resume":
 			return resumeSlash(home, cwd, rest, tr, continued)
 		case "fork":
@@ -920,7 +917,11 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 			if err != nil {
 				return tr.User(err.Error())
 			}
-			return tr.User(text)
+			id := strings.TrimPrefix(text, "forked ")
+			if err := switchSession(home, id, tr, continued); err != nil {
+				return err
+			}
+			return tr.User("forked " + id)
 		case "compact":
 			return tr.User(compactSession(inv, *settings, home, cwd, continued))
 		default:
@@ -1087,54 +1088,138 @@ func subscriptionProvider(home, name, model, origin string) (provider.Provider, 
 	return provider.Responses{Kind: name, APIKey: token, AccountID: cred.AccountID}, model, nil
 }
 
-func skillsSlash(cwd, home, rest string) string {
+func helpSlash(inv cli.Invocation, settings *config.File, home, cwd string, tr *tui.Transcript, errOut io.Writer, continued *bool, inbox *agent.Mailbox, grants *agent.Grants, images *[]string) error {
+	items := make([]string, len(cli.SlashCommands))
+	for i, c := range cli.SlashCommands {
+		items[i] = "/" + c.Name + "  " + c.Help
+	}
+	if err := tr.Menu("Help", items); err != nil {
+		return err
+	}
+	sel, err := tui.DecideMenu(os.Stdin, len(items), tr.SetMenu)
+	_ = tr.ClearMenu()
+	if err != nil {
+		return tr.User(err.Error())
+	}
+	if sel < 0 {
+		return nil
+	}
+	name := cli.SlashCommands[sel].Name
+	if name == "help" {
+		return tr.User("/" + name + "  " + cli.SlashCommands[sel].Help)
+	}
+	return handleSubmit(inv, settings, home, cwd, tr, errOut, "/"+name, continued, inbox, grants, images)
+}
+
+func freshSlash(name, home string, tr *tui.Transcript, continued *bool) error {
+	if continued != nil {
+		*continued = false
+	}
+	if name == "reset" {
+		_ = session.Forget(home)
+	}
+	if err := tr.ClearView(); err != nil {
+		return err
+	}
+	if err := tr.Welcome(cli.Version); err != nil {
+		return err
+	}
+	switch name {
+	case "new":
+		return tr.User("new session")
+	case "reset":
+		return tr.User("reset")
+	default:
+		return tr.User("cleared")
+	}
+}
+
+func skillsSlash(cwd, home, rest string, tr *tui.Transcript) error {
 	fields := strings.Fields(rest)
-	if len(fields) == 0 || fields[0] == "list" {
-		return skillList(cwd, home)
+	if len(fields) == 0 {
+		return skillsMenu(cwd, home, tr)
+	}
+	if fields[0] == "list" {
+		return tr.User(skillList(cwd, home))
 	}
 	found, err := skills.Discover(cwd, home)
 	if err != nil {
-		return err.Error()
+		return tr.User(err.Error())
 	}
 	switch fields[0] {
 	case "show":
 		if len(fields) != 2 {
-			return "usage: /skills show NAME"
+			return tr.User("usage: /skills show NAME")
 		}
 		text, err := skills.Show(found, fields[1])
 		if err != nil {
-			return err.Error()
+			return tr.User(err.Error())
 		}
-		return text
+		return tr.User(text)
 	case "create":
 		if len(fields) < 2 {
-			return "usage: /skills create NAME"
+			return tr.User("usage: /skills create NAME")
 		}
 		path, err := skills.Create(filepath.Join(home, "skills"), fields[1], strings.Join(fields[2:], " "))
 		if err != nil {
-			return err.Error()
+			return tr.User(err.Error())
 		}
-		return "created " + path
+		return tr.User("created " + path)
 	case "add", "install":
 		if len(fields) != 2 {
-			return "usage: /skills install PATH"
+			return tr.User("usage: /skills install PATH")
 		}
 		dst, err := skills.Install(fields[1], filepath.Join(home, "skills"))
 		if err != nil {
-			return err.Error()
+			return tr.User(err.Error())
 		}
-		return "installed " + dst
+		return tr.User("installed " + dst)
 	case "remove":
 		if len(fields) != 2 {
-			return "usage: /skills remove NAME"
+			return tr.User("usage: /skills remove NAME")
 		}
 		if err := skills.Remove(filepath.Join(home, "skills"), fields[1]); err != nil {
-			return err.Error()
+			return tr.User(err.Error())
 		}
-		return "removed " + fields[1]
+		return tr.User("removed " + fields[1])
+	case "path":
+		return tr.User(filepath.Join(home, "skills"))
 	default:
-		return "usage: /skills [list|show|add|install|create|remove]"
+		return tr.User("usage: /skills [list|show|add|install|create|remove|path]")
 	}
+}
+
+func skillsMenu(cwd, home string, tr *tui.Transcript) error {
+	found, err := skills.Discover(cwd, home)
+	if err != nil {
+		return tr.User(err.Error())
+	}
+	if len(found) == 0 {
+		return tr.User("no skills")
+	}
+	items := make([]string, len(found))
+	for i, sk := range found {
+		items[i] = sk.Name
+		if sk.Description != "" {
+			items[i] += "  " + sk.Description
+		}
+	}
+	if err := tr.Menu("Skills", items); err != nil {
+		return err
+	}
+	sel, err := tui.DecideMenu(os.Stdin, len(items), tr.SetMenu)
+	_ = tr.ClearMenu()
+	if err != nil {
+		return tr.User(err.Error())
+	}
+	if sel < 0 {
+		return nil
+	}
+	text, err := skills.Show(found, found[sel].Name)
+	if err != nil {
+		return tr.User(err.Error())
+	}
+	return tr.User(text)
 }
 
 func renameSession(home, title string) string {
@@ -1203,15 +1288,16 @@ func workspaceSlash(home, cwd string, settings *config.File, rest string) string
 	}
 }
 
-func copyLast(tr *tui.Transcript) string {
+func copyLast(tr *tui.Transcript) error {
 	text := ""
 	if tr != nil {
 		text = tr.LastAssistant()
 	}
 	if text == "" {
-		return "nothing to copy"
+		return tr.User("nothing to copy")
 	}
-	return "\x1b]52;c;" + b64(text) + "\x1b\\copied"
+	_ = tr.WriteRaw("\x1b]52;c;" + b64(text) + "\x1b\\")
+	return tr.User("copied")
 }
 
 func b64(s string) string {
@@ -1226,47 +1312,73 @@ func undoLast() string {
 	return text
 }
 
-func effortSlash(settings *config.File, tr *tui.Transcript, rest string) string {
+func effortSlash(home string, settings *config.File, tr *tui.Transcript, inv cli.Invocation, rest string) error {
 	level := strings.TrimSpace(rest)
 	if level == "" {
-		if settings != nil && settings.Effort != "" {
-			return "effort " + settings.Effort
+		var efforts []string
+		if models, err := listProviderModels(home, inv, *settings); err == nil {
+			efforts = effortsFor(models, settings.Model)
 		}
-		return "effort medium"
+		if len(efforts) == 0 {
+			efforts = []string{"none", "low", "medium", "high", "xhigh", "max"}
+		}
+		if err := chooseEffort(settings, tr, efforts); err != nil {
+			return err
+		}
+		_ = config.Save(home, *settings)
+		tr.SetPlace("", settings.Effort)
+		return tr.User("effort " + shownEffort(settings.Effort))
 	}
 	switch level {
-	case "low", "medium", "high", "xhigh", "max":
+	case "default", "none", "minimal", "low", "medium", "high", "xhigh", "max":
 	default:
-		return "effort is low, medium, high, xhigh, or max"
+		return tr.User("effort is default, none, low, medium, high, xhigh, or max")
 	}
-	if settings != nil {
+	if level == "default" {
+		settings.Effort = ""
+	} else {
 		settings.Effort = level
-		if level == "high" || level == "xhigh" || level == "max" {
-			settings.ServiceTier = "priority"
-		}
 	}
-	if tr != nil {
-		tr.SetPlace("", level)
-	}
-	return "effort " + level
+	_ = config.Save(home, *settings)
+	tr.SetPlace("", settings.Effort)
+	return tr.User("effort " + shownEffort(settings.Effort))
 }
 
-func settingsSlash(settings *config.File) string {
-	if settings == nil {
-		return "{}"
+func settingsSlash(inv cli.Invocation, settings *config.File, home, cwd string, tr *tui.Transcript, errOut io.Writer, continued *bool, inbox *agent.Mailbox, grants *agent.Grants, images *[]string) error {
+	items := []string{"Model", "Effort", "Permissions", "Fast", "Status"}
+	if err := tr.Menu("Settings", items); err != nil {
+		return err
 	}
-	b, _ := json.MarshalIndent(settings, "", "  ")
-	return string(b)
+	sel, err := tui.DecideMenu(os.Stdin, len(items), tr.SetMenu)
+	_ = tr.ClearMenu()
+	if err != nil {
+		return tr.User(err.Error())
+	}
+	if sel < 0 {
+		return nil
+	}
+	cmd := []string{"/model", "/effort", "/permissions", "/fast", "/status"}[sel]
+	return handleSubmit(inv, settings, home, cwd, tr, errOut, cmd, continued, inbox, grants, images)
 }
 
 func launchInstance(profile string) string {
-	args := []string{}
+	bin := os.Args[0]
 	if strings.TrimSpace(profile) != "" {
-		args = append(args, "--profile", profile)
+		bin += " --profile " + profile
 	}
-	cmd := exec.Command(os.Args[0], args...)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	if runtime.GOOS == "darwin" {
+		script := "tell application \"Terminal\" to do script " + strconv.Quote(bin)
+		cmd := exec.Command("osascript", "-e", script)
+		if err := cmd.Start(); err != nil {
+			return err.Error()
+		}
+		return "launched"
+	}
+	cmd := exec.Command(os.Args[0])
+	if strings.TrimSpace(profile) != "" {
+		cmd.Args = append(cmd.Args, "--profile", profile)
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		return err.Error()
 	}
@@ -1552,12 +1664,50 @@ func slashMatches(cwd, home, line string) []tui.Completion {
 	return out
 }
 
+func agentsSlash(inbox *agent.Mailbox, tr *tui.Transcript) error {
+	kids := inbox.Agents()
+	if len(kids) == 0 {
+		return tr.User("no agents")
+	}
+	items := make([]string, len(kids))
+	for i, k := range kids {
+		state := "working"
+		if k.Done {
+			state = "done"
+		}
+		items[i] = k.Name + "  " + state
+	}
+	if err := tr.Menu("Agents", items); err != nil {
+		return err
+	}
+	sel, err := tui.DecideMenu(os.Stdin, len(items), tr.SetMenu)
+	_ = tr.ClearMenu()
+	if err != nil {
+		return tr.User(err.Error())
+	}
+	if sel < 0 {
+		return nil
+	}
+	k := kids[sel]
+	if strings.TrimSpace(k.Text) == "" {
+		return tr.User(k.Name + " is still working")
+	}
+	return tr.ShowAssistant(k.Text)
+}
+
 func fastSlash(home string, settings *config.File, tr *tui.Transcript, rest string) string {
 	if settings == nil {
 		settings = &config.File{}
 	}
 	switch strings.TrimSpace(rest) {
-	case "", "status":
+	case "":
+		if settings.Fast {
+			rest = "off"
+		} else {
+			rest = "on"
+		}
+		return fastSlash(home, settings, tr, rest)
+	case "status":
 		if settings.Fast {
 			return "fast mode on"
 		}
@@ -1824,7 +1974,7 @@ func shellSlash(rest string) string {
 	return "shell snapshot cleared"
 }
 
-func statusLine(inv cli.Invocation, settings config.File, cwd string) string {
+func statusLine(inv cli.Invocation, settings config.File, home, cwd string) string {
 	model, _, _ := resolveModel(inv, settings)
 	mode := settings.PermissionMode
 	if inv.Permission != "" {
@@ -1833,7 +1983,11 @@ func statusLine(inv cli.Invocation, settings config.File, cwd string) string {
 	if mode == "" {
 		mode = string(perm.Default)
 	}
-	return "model " + model + "\npermission " + mode + "\nworkspace " + cwd
+	id, _ := session.Remembered(home)
+	if id == "" {
+		id = "none"
+	}
+	return "model " + model + "\npermission " + mode + "\nworkspace " + cwd + "\nsession " + id
 }
 
 func allowlistCommand(home, cwd, rest string, grants *agent.Grants) string {

@@ -766,6 +766,15 @@ func Remember(root, id string) error {
 	return os.WriteFile(filepath.Join(root, "last_interactive"), []byte(id+"\n"), 0o600)
 }
 
+// Forget drops the remembered session so the next prompt starts a new one.
+func Forget(root string) error {
+	err := os.Remove(filepath.Join(root, "last_interactive"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 // Remembered reads the id gx -c resumes.
 func Remembered(root string) (string, error) {
 	b, err := os.ReadFile(filepath.Join(root, "last_interactive"))

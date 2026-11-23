@@ -84,13 +84,21 @@ func NewTranscript(out interface{ Write([]byte) (int, error) }, cols int) *Trans
 	if cols < 20 {
 		cols = 80
 	}
-	return &Transcript{screen: NewScreen(out), cols: cols, cursor: 0}
+	return &Transcript{screen: NewScreen(out), cols: cols, cursor: 0, hideContext: true, hideWorkspace: true}
 }
 
 func (t *Transcript) SetStatus(model, mode string, hasKey bool) {
 	t.model = model
 	t.mode = mode
 	t.hasKey = hasKey
+}
+
+// WriteRaw sends bytes without moving the frame. /copy uses it for the clipboard.
+func (t *Transcript) WriteRaw(s string) error {
+	if t == nil || t.screen == nil {
+		return nil
+	}
+	return t.screen.WriteRaw(s)
 }
 
 // LastAssistant is the last finished assistant text, for /copy.
@@ -845,6 +853,14 @@ func (t *Transcript) hintRow() string {
 	}
 	if t.effort != "" {
 		left = append(left, t.effort)
+	}
+	if !t.hideContext {
+		if label := t.contextLabel(); label != "" && label != "0" {
+			left = append(left, label)
+		}
+	}
+	if !t.hideWorkspace && t.cwd != "" {
+		left = append(left, filepathBase(t.cwd))
 	}
 	if t.fast {
 		left = append(left, "\u26a1\ufe0e")
