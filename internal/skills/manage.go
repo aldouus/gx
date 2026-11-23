@@ -1,11 +1,14 @@
 package skills
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // CatalogBudget is how much of the skill list is injected into the prompt.
@@ -69,8 +72,11 @@ func Remove(root, name string) error {
 	return os.RemoveAll(filepath.Join(root, name))
 }
 
-// Install copies a skill directory into root/name.
+// Install copies a skill directory, or downloads an http(s) SKILL.md, into root.
 func Install(src, root string) (string, error) {
+	if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+		return installURL(src, root)
+	}
 	info, err := os.Stat(src)
 	if err != nil {
 		return "", err
@@ -87,6 +93,46 @@ func Install(src, root string) (string, error) {
 		return "", err
 	}
 	return dst, nil
+}
+
+func installURL(raw, root string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+	if err != nil {
+		return "", err
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		return "", fmt.Errorf("skill install: %s", res.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	name, description, _ := parseSkill(string(body), "")
+	if name == "" {
+		name = strings.TrimSuffix(filepath.Base(req.URL.Path), ".md")
+	}
+	if name == "" || name == "/" || name == "." {
+		return "", fmt.Errorf("skill install: no name in %s", raw)
+	}
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, skillFileName)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		return "", err
+	}
+	if description == "" && !strings.Contains(string(body), "description:") {
+		return path, nil
+	}
+	return path, nil
 }
 
 func copyTree(src, dst string) error {
