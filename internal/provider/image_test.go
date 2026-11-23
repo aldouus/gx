@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,4 +36,35 @@ func TestFileDataURL(t *testing.T) {
 	if content[1].(map[string]any)["type"] != "input_image" {
 		t.Fatalf("content %#v", content)
 	}
+}
+
+func TestImageDimensionCap(t *testing.T) {
+	dir := t.TempDir()
+	okPath := filepath.Join(dir, "ok.png")
+	bigPath := filepath.Join(dir, "big.png")
+	if err := os.WriteFile(okPath, pngOf(8, 8), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FileDataURL(okPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bigPath, pngOf(8001, 1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FileDataURL(bigPath); err == nil || !strings.Contains(err.Error(), "8000") {
+		t.Fatal(err)
+	}
+	if MaxDimension(21) != 2000 || MaxDimension(1) != 8000 {
+		t.Fatal(MaxDimension(21), MaxDimension(1))
+	}
+}
+
+func pngOf(w, h int) []byte {
+	b := []byte("\x89PNG\r\n\x1a\n")
+	b = append(b, 0, 0, 0, 13)
+	b = append(b, 'I', 'H', 'D', 'R')
+	var dim [8]byte
+	binary.BigEndian.PutUint32(dim[0:4], uint32(w))
+	binary.BigEndian.PutUint32(dim[4:8], uint32(h))
+	return append(b, dim[:]...)
 }

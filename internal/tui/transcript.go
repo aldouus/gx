@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/base64"
 	"strings"
 
 	"gx/internal/width"
@@ -46,6 +47,7 @@ type Transcript struct {
 	askChoice int
 	askNote   string
 	askAmend  bool
+	statusSeq string
 }
 
 func NewTranscript(out interface{ Write([]byte) (int, error) }, cols int) *Transcript {
@@ -69,8 +71,19 @@ func (t *Transcript) SetPlace(cwd, effort string) {
 	}
 }
 
-func (t *Transcript) SetBusy(busy bool)   { t.busy = busy }
+func (t *Transcript) SetBusy(busy bool) {
+	t.busy = busy
+	t.noteActivity()
+}
 func (t *Transcript) SetCtrlC(armed bool) { t.ctrlC = armed }
+
+// End tells the terminal the program is leaving.
+func (t *Transcript) End() {
+	if t == nil || t.screen == nil {
+		return
+	}
+	_ = t.screen.WriteRaw("\x1b]7501;state=clear\x1b\\")
+}
 
 func (t *Transcript) ToggleDetail() {
 	t.detail = !t.detail
@@ -197,6 +210,7 @@ func (t *Transcript) Permission(name, detail string) error {
 	t.ask = &ToolLine{Name: name, Detail: detail}
 	t.askChoice = 0
 	t.askNote = ""
+	t.noteActivity()
 	return t.Paint()
 }
 
@@ -229,6 +243,7 @@ func (t *Transcript) ClearPermission() error {
 	t.askChoice = 0
 	t.askNote = ""
 	t.askAmend = false
+	t.noteActivity()
 	return t.Paint()
 }
 
@@ -237,8 +252,46 @@ func (t *Transcript) Paint() error {
 	if t.alt {
 		return nil
 	}
+	t.noteActivity()
 	frame := t.frame()
 	return t.screen.Paint(frame)
+}
+
+// ProgramStatus is an OSC 7501 report. Terminals that do not implement it ignore the sequence.
+func ProgramStatus(state, kind, msg string) string {
+	var b strings.Builder
+	b.WriteString("\x1b]7501;state=")
+	b.WriteString(state)
+	if kind != "" {
+		b.WriteString(":kind=")
+		b.WriteString(kind)
+	}
+	b.WriteString(":app=fx")
+	if msg != "" {
+		b.WriteString(":msg=")
+		b.WriteString(base64.StdEncoding.EncodeToString([]byte(oneLine(msg))))
+	}
+	b.WriteString("\x1b\\")
+	return b.String()
+}
+
+func (t *Transcript) noteActivity() {
+	if t == nil || t.screen == nil || t.alt {
+		return
+	}
+	state, kind, msg := "idle", "", ""
+	switch {
+	case t.ask != nil:
+		state, kind, msg = "blocked", "permission", t.ask.Name+" "+t.ask.Detail
+	case t.busy:
+		state = "working"
+	}
+	seq := ProgramStatus(state, kind, msg)
+	if seq == t.statusSeq {
+		return
+	}
+	t.statusSeq = seq
+	_ = t.screen.WriteRaw(seq)
 }
 
 func (t *Transcript) frame() Frame {
@@ -466,6 +519,31 @@ func shortPath(path string) string {
 		return width.Clip(path, 24)
 	}
 	return width.Clip(base, 24)
+}
+
+// ImageBadge is an OSC 8 hyperlink around an image label.
+func ImageBadge(n int, path string) string {
+	if n < 1 {
+		n = 1
+	}
+	return "\x1b]8;;" + fileURL(path) + "\x1b\\[Image " + itoa(n) + "]\x1b]8;;\x1b\\"
+}
+
+func fileURL(path string) string {
+	var b strings.Builder
+	b.WriteString("file://")
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+		if c == '/' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' || c == '~' {
+			b.WriteByte(c)
+			continue
+		}
+		const hex = "0123456789ABCDEF"
+		b.WriteByte('%')
+		b.WriteByte(hex[c>>4])
+		b.WriteByte(hex[c&0x0f])
+	}
+	return b.String()
 }
 
 func oneLine(s string) string {

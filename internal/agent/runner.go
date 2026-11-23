@@ -384,6 +384,17 @@ func pathInWorkspace(root, args string) bool {
 	return true
 }
 
+func imageCount(s *session.Session) int {
+	if s == nil {
+		return 0
+	}
+	n := 0
+	for _, m := range s.History() {
+		n += len(m.Images)
+	}
+	return n
+}
+
 func (r *Runner) messages() []provider.Message {
 	sys := strings.TrimSpace(basePrompt)
 	if r.Extra != "" {
@@ -393,7 +404,7 @@ func (r *Runner) messages() []provider.Message {
 	for _, m := range r.Session.History() {
 		pm := provider.Message{Role: m.Role, Text: m.Text, ToolID: m.ToolID}
 		for _, path := range m.Images {
-			url, err := provider.FileDataURL(path)
+			url, err := provider.FileDataURLLimit(path, provider.MaxDimension(imageCount(r.Session)))
 			if err != nil {
 				pm.Text += "\n[image: " + path + " unreadable]"
 				continue

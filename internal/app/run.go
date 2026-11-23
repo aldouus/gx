@@ -600,6 +600,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 	defer restore()
 	_, cols := tui.WindowSize(tui.StdoutFD())
 	tr := tui.NewTranscript(os.Stdout, cols)
+	defer tr.End()
 	model, _, _ := resolveModel(inv, settings)
 	mode := settings.PermissionMode
 	if inv.Permission != "" {
@@ -746,7 +747,17 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 		next.Images = append(append([]string{}, next.Images...), *images...)
 		*images = nil
 	}
-	if err := tr.User(line); err != nil {
+	shown := line
+	if len(next.Images) > 0 {
+		var b strings.Builder
+		b.WriteString(line)
+		for i, path := range next.Images {
+			b.WriteByte('\n')
+			b.WriteString(tui.ImageBadge(i+1, path))
+		}
+		shown = b.String()
+	}
+	if err := tr.User(shown); err != nil {
 		return err
 	}
 	tr.SetBusy(true)
@@ -1079,10 +1090,12 @@ func attachImage(cwd, rest string, images *[]string, tr *tui.Transcript) error {
 	if _, err := os.Stat(path); err != nil {
 		return tr.User(err.Error())
 	}
+	n := 1
 	if images != nil {
 		*images = append(*images, path)
+		n = len(*images)
 	}
-	return tr.User("attached " + path)
+	return tr.User("attached " + path + "\n" + tui.ImageBadge(n, path))
 }
 
 func listImages(rest string, images *[]string, tr *tui.Transcript) error {

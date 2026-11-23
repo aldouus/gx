@@ -198,6 +198,43 @@ func TestPermissionFooterAndKeys(t *testing.T) {
 	}
 }
 
+func TestProgramStatus(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewTranscript(&buf, 40)
+	if err := tr.Paint(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "\x1b]7501;state=idle:app=fx\x1b\\") {
+		t.Fatal(buf.String())
+	}
+	tr.SetBusy(true)
+	if !strings.Contains(buf.String(), "\x1b]7501;state=working:app=fx\x1b\\") {
+		t.Fatal("missing working")
+	}
+	if err := tr.Permission("shell", "git push"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "state=blocked:kind=permission:app=fx:msg=") {
+		t.Fatal(buf.String())
+	}
+	tr.End()
+	if !strings.Contains(buf.String(), "\x1b]7501;state=clear\x1b\\") {
+		t.Fatal("missing clear")
+	}
+}
+
+func TestImageBadge(t *testing.T) {
+	got := ImageBadge(2, "/tmp/pic.png")
+	want := "\x1b]8;;file:///tmp/pic.png\x1b\\[Image 2]\x1b]8;;\x1b\\"
+	if got != want {
+		t.Fatalf("%q", got)
+	}
+	got = ImageBadge(1, "/tmp/a#b?c%d.png")
+	if !strings.Contains(got, "file:///tmp/a%23b%3Fc%25d.png") {
+		t.Fatal(got)
+	}
+}
+
 func TestPermissionNote(t *testing.T) {
 	choice, note, err := DecidePermission(strings.NewReader("2keep the test\n"), nil)
 	if err != nil || choice != 1 || note != "keep the test" {
