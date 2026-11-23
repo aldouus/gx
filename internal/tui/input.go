@@ -2,19 +2,38 @@ package tui
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
 // Composer is the input line. Ctrl+C arms an exit. A second Ctrl+C exits.
-// Escape twice interrupts the running turn.
+// Escape twice interrupts the running turn. Vim, when enabled, uses insert,
+// normal, and visual modes.
 type Composer struct {
 	Line    string
 	Pos     int
 	Armed   bool
 	Esc     bool
+	Vim     bool
+	Mode    string
+	Anchor  int
 	History []string
 	hist    int
 	pending []byte
+}
+
+// PendingEsc reports a lone escape waiting to see if a cursor sequence follows.
+func (c *Composer) PendingEsc() bool {
+	return c != nil && len(c.pending) == 1 && c.pending[0] == 0x1b
+}
+
+// FinishEsc treats a lone escape as complete. In vim mode that enters normal.
+func (c *Composer) FinishEsc() Action {
+	if !c.PendingEsc() {
+		return Action{}
+	}
+	c.pending = nil
+	return c.bareEsc()
 }
 
 // Action is what Feed decided.
@@ -99,22 +118,34 @@ func (c *Composer) Feed(b []byte) Action {
 			c.Line = c.Line[c.Pos:]
 			c.Pos = 0
 			act.Redraw = true
+		case 23: // ctrl+w
+			b = b[1:]
+			c.disarm()
+			c.deleteWordBack()
+			act.Redraw = true
 		case '\t':
 			b = b[1:]
 			c.disarm()
 			act.Tab = true
 			act.Redraw = true
 		case 0x1b:
+			if len(b) >= 2 && (b[1] == 127 || b[1] == 8) {
+				b = b[2:]
+				c.disarm()
+				c.deleteWordBack()
+				act.Redraw = true
+				continue
+			}
 			if len(b) == 1 {
 				c.pending = append([]byte{}, b...)
 				return act
 			}
 			rest, a := c.escape(b)
 			b = rest
-			act.Interrupt = a.Interrupt
-			act.Up = a.Up
-			act.Down = a.Down
-			act.Close = a.Close
+			act.Interrupt = act.Interrupt || a.Interrupt
+			act.Up = act.Up || a.Up
+			act.Down = act.Down || a.Down
+			act.Close = act.Close || a.Close
 			act.Redraw = true
 		default:
 			if b[0] < 0x20 {
@@ -128,8 +159,11 @@ func (c *Composer) Feed(b []byte) Action {
 			}
 			r, size := decode(b)
 			b = b[size:]
-			c.Line = c.Line[:c.Pos] + string(r) + c.Line[c.Pos:]
-			c.Pos += len(string(r))
+			if c.commandMode() {
+				c.vimKey(r)
+			} else {
+				c.insert(r)
+			}
 			act.Redraw = true
 		}
 	}
@@ -204,7 +238,195 @@ func (c *Composer) escape(b []byte) ([]byte, Action) {
 	if strings.HasPrefix(strings.TrimSpace(c.Line), "/") {
 		return b[1:], Action{Close: true}
 	}
+	if c.Vim {
+		c.enterNormal()
+		return b[1:], Action{}
+	}
 	return b[1:], Action{}
+}
+
+func (c *Composer) bareEsc() Action {
+	if strings.HasPrefix(strings.TrimSpace(c.Line), "/") {
+		return Action{Close: true, Redraw: true}
+	}
+	if c.Vim {
+		c.enterNormal()
+		return Action{Redraw: true}
+	}
+	if c.Esc {
+		c.Esc = false
+		return Action{Interrupt: true, Redraw: true}
+	}
+	c.Esc = true
+	c.Armed = false
+	return Action{Redraw: true}
+}
+
+func (c *Composer) commandMode() bool {
+	return c.Vim && (c.Mode == "normal" || c.Mode == "visual")
+}
+
+func (c *Composer) enterNormal() {
+	c.Mode = "normal"
+	if c.Pos > 0 && c.Pos >= len(c.Line) {
+		c.move(-1)
+	}
+}
+
+func (c *Composer) insert(r rune) {
+	s := string(r)
+	c.Line = c.Line[:c.Pos] + s + c.Line[c.Pos:]
+	c.Pos += len(s)
+	c.Mode = "insert"
+}
+
+func (c *Composer) vimKey(r rune) {
+	switch r {
+	case 'h':
+		c.move(-1)
+	case 'l':
+		c.move(1)
+	case '0':
+		c.Pos = 0
+	case '$':
+		c.Pos = len(c.Line)
+		if c.Mode == "normal" && c.Pos > 0 {
+			c.move(-1)
+		}
+	case 'i':
+		if c.Mode == "visual" {
+			return
+		}
+		c.Mode = "insert"
+	case 'a':
+		if c.Mode == "visual" {
+			return
+		}
+		c.move(1)
+		c.Mode = "insert"
+	case 'I':
+		c.Pos = 0
+		c.Mode = "insert"
+	case 'A':
+		c.Pos = len(c.Line)
+		c.Mode = "insert"
+	case 'x':
+		if c.Mode == "visual" {
+			c.deleteSelection()
+			return
+		}
+		c.deleteForward()
+	case 'X':
+		c.deleteBack()
+	case 'd', 'D':
+		if c.Mode == "visual" || r == 'D' {
+			if r == 'D' && c.Mode != "visual" {
+				c.Line = c.Line[:c.Pos]
+				return
+			}
+			c.deleteSelection()
+			return
+		}
+		c.Line = ""
+		c.Pos = 0
+	case 'v':
+		if c.Mode == "visual" {
+			c.Mode = "normal"
+			return
+		}
+		c.Mode = "visual"
+		c.Anchor = c.Pos
+	case 'w':
+		c.word(1)
+	case 'b':
+		c.word(-1)
+	default:
+		if c.Mode == "normal" && r == '/' {
+			c.Mode = "insert"
+			c.insert('/')
+		}
+	}
+}
+
+func (c *Composer) deleteSelection() {
+	a, b := c.Anchor, c.Pos
+	if a > b {
+		a, b = b, a
+	}
+	if b < len(c.Line) {
+		_, size := decode([]byte(c.Line[b:]))
+		b += size
+	}
+	if a < 0 {
+		a = 0
+	}
+	if b > len(c.Line) {
+		b = len(c.Line)
+	}
+	c.Line = c.Line[:a] + c.Line[b:]
+	c.Pos = a
+	c.Mode = "normal"
+}
+
+func (c *Composer) deleteWordBack() {
+	if c.Pos == 0 {
+		return
+	}
+	i := c.Pos
+	for i > 0 {
+		r, size := decodeLast(c.Line[:i])
+		if !unicode.IsSpace(r) {
+			break
+		}
+		i -= size
+	}
+	for i > 0 {
+		r, size := decodeLast(c.Line[:i])
+		if unicode.IsSpace(r) {
+			break
+		}
+		i -= size
+	}
+	c.Line = c.Line[:i] + c.Line[c.Pos:]
+	c.Pos = i
+}
+
+func (c *Composer) word(dir int) {
+	if dir < 0 {
+		i := c.Pos
+		for i > 0 {
+			r, size := decodeLast(c.Line[:i])
+			if !unicode.IsSpace(r) {
+				break
+			}
+			i -= size
+		}
+		for i > 0 {
+			r, size := decodeLast(c.Line[:i])
+			if unicode.IsSpace(r) {
+				break
+			}
+			i -= size
+		}
+		c.Pos = i
+		return
+	}
+	i := c.Pos
+	for i < len(c.Line) {
+		r, size := decode([]byte(c.Line[i:]))
+		if unicode.IsSpace(r) {
+			break
+		}
+		i += size
+	}
+	for i < len(c.Line) {
+		r, size := decode([]byte(c.Line[i:]))
+		if !unicode.IsSpace(r) {
+			break
+		}
+		i += size
+	}
+	c.Pos = i
 }
 
 func (c *Composer) history(dir int) {
@@ -227,7 +449,11 @@ func (c *Composer) history(dir int) {
 
 func (c *Composer) move(dir int) {
 	if dir < 0 {
-		c.deleteBack()
+		if c.Pos == 0 {
+			return
+		}
+		_, size := decodeLast(c.Line[:c.Pos])
+		c.Pos -= size
 		return
 	}
 	if c.Pos >= len(c.Line) {

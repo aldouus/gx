@@ -107,6 +107,48 @@ func TestCtrlCArmsThenExits(t *testing.T) {
 	}
 }
 
+func TestAltBackspaceDeletesWord(t *testing.T) {
+	var c Composer
+	c.Feed([]byte("hello world"))
+	act := c.Feed([]byte{0x1b, 127})
+	if !act.Redraw || c.Line != "hello " || c.Pos != len("hello ") {
+		t.Fatalf("line %q pos %d redraw %v", c.Line, c.Pos, act.Redraw)
+	}
+}
+
+func TestVimNormalDeletesUnderCursor(t *testing.T) {
+	var c Composer
+	c.Vim = true
+	c.Mode = "insert"
+	c.Feed([]byte("hi"))
+	c.pending = []byte{0x1b}
+	if act := c.FinishEsc(); c.Mode != "normal" || !act.Redraw {
+		t.Fatalf("mode %s", c.Mode)
+	}
+	c.Feed([]byte("x"))
+	if c.Line != "h" {
+		t.Fatalf("line %q", c.Line)
+	}
+}
+
+func TestStatusVimIndicator(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewTranscript(&buf, 40)
+	tr.SetStatus("grok", "auto", true)
+	tr.SetVim(true, "normal")
+	tr.SetInput("hi", 1)
+	if err := tr.Paint(); err != nil {
+		t.Fatal(err)
+	}
+	plain := strip(buf.String())
+	if !strings.Contains(plain, "NORMAL") || !strings.HasSuffix(strings.TrimRight(plain, "\n"), "NORMAL") && !strings.Contains(plain, "NORMAL") {
+		t.Fatal(plain)
+	}
+	if strings.Contains(plain, "esc esc") {
+		t.Fatal(plain)
+	}
+}
+
 func TestCtrlOAndSubmit(t *testing.T) {
 	var c Composer
 	c.Feed([]byte("hi"))

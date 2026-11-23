@@ -20,6 +20,7 @@ type Settings struct {
 	ServiceTier    string   `json:"service_tier,omitempty"`
 	Effort         string   `json:"effort,omitempty"`
 	Fast           bool     `json:"fast,omitempty"`
+	Vim            bool     `json:"vim,omitempty"`
 	ExtraDirs      []string `json:"extra_dirs,omitempty"`
 	StatusContext  string   `json:"statusline_context,omitempty"`
 	StatusSession  string   `json:"statusline_session,omitempty"`

@@ -759,6 +759,11 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 	var images []string
 	continued := inv.Continue || inv.Resume != ""
 	var comp tui.Composer
+	comp.Vim = settings.Vim
+	if comp.Vim {
+		comp.Mode = "insert"
+	}
+	tr.SetVim(comp.Vim, comp.Mode)
 	slashSel := 0
 	slashClosed := false
 	slashLine := ""
@@ -780,6 +785,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 				return 0
 			}
 			act = comp.Feed(buf[:n])
+			act = mergeAction(act, completeEsc(in, &comp))
 		}
 		if act.Exit {
 			return 0
@@ -832,6 +838,14 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 		}
 		tr.SetCompletions(matches, slashSel)
 		tr.SetCtrlC(comp.Armed)
+		comp.Vim = settings.Vim
+		if settings.Vim && comp.Mode == "" {
+			comp.Mode = "insert"
+		}
+		if !settings.Vim {
+			comp.Mode = ""
+		}
+		tr.SetVim(comp.Vim, comp.Mode)
 		tr.SetInput(comp.Line, comp.Pos)
 		if act.Submit != "" {
 			tr.SetCompletions(nil, 0)
@@ -903,6 +917,13 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 			return settingsSlash(inv, settings, home, cwd, tr, errOut, continued, inbox, grants, images)
 		case "statusline":
 			return statuslineSlash(home, settings, tr, rest)
+		case "vim":
+			settings.Vim = !settings.Vim
+			_ = config.Save(home, *settings)
+			if settings.Vim {
+				return tr.User("vim on")
+			}
+			return tr.User("vim off")
 		case "launch":
 			return tr.User(launchInstance(rest))
 		case "close":
@@ -1658,6 +1679,42 @@ func slashMatches(cwd, home, line string) []tui.Completion {
 		out = append(out, tui.Completion{Label: sk.Name, Detail: sk.Description, Insert: sk.Name + " ", Skill: true})
 	}
 	return out
+}
+
+func mergeAction(a, b tui.Action) tui.Action {
+	if b.Submit != "" {
+		a.Submit = b.Submit
+	}
+	a.Exit = a.Exit || b.Exit
+	a.Interrupt = a.Interrupt || b.Interrupt
+	a.Redraw = a.Redraw || b.Redraw
+	a.Detail = a.Detail || b.Detail
+	a.Up = a.Up || b.Up
+	a.Down = a.Down || b.Down
+	a.Tab = a.Tab || b.Tab
+	a.Close = a.Close || b.Close
+	return a
+}
+
+func completeEsc(in io.Reader, c *tui.Composer) tui.Action {
+	if c == nil || !c.PendingEsc() {
+		return tui.Action{}
+	}
+	d, ok := in.(interface{ SetReadDeadline(time.Time) error })
+	if !ok {
+		return c.FinishEsc()
+	}
+	_ = d.SetReadDeadline(time.Now().Add(40 * time.Millisecond))
+	defer d.SetReadDeadline(time.Time{})
+	var buf [64]byte
+	n, err := in.Read(buf[:])
+	if n > 0 {
+		return c.Feed(buf[:n])
+	}
+	if err != nil {
+		return c.FinishEsc()
+	}
+	return tui.Action{}
 }
 
 func statusOn(saved string, fallback bool) bool {

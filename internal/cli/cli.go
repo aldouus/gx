@@ -297,6 +297,7 @@ var SlashCommands = []Slash{
 	{"logout", "Sign out of codex or grok"},
 	{"image", "Attach an image to the next prompt"},
 	{"images", "List or clear pending images"},
+	{"vim", "Toggle vim keys"},
 	{"version", "Show the gx version"},
 	{"quit", "Exit"},
 	{"exit", "Exit"},

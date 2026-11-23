@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"gx/internal/width"
 )
@@ -66,6 +67,9 @@ type Transcript struct {
 	hideSession   bool
 	hideWorkspace bool
 	fast          bool
+	vim           bool
+	vimMode       string
+	cursorShape   string
 
 	busyAt   time.Time
 	stopTick chan struct{}
@@ -205,7 +209,7 @@ func (t *Transcript) End() {
 		return
 	}
 	t.SetBusy(false)
-	_ = t.screen.WriteRaw("\x1b]7501;state=clear\x1b\\")
+	_ = t.screen.WriteRaw("\x1b[0 q\x1b]7501;state=clear\x1b\\")
 }
 
 func (t *Transcript) ToggleDetail() {
@@ -248,6 +252,18 @@ func (t *Transcript) leaveTranscript() {
 	t.alt = false
 	t.screen.Reset()
 	_ = t.screen.WriteRaw("\x1b[?1049l")
+}
+
+// SetVim records whether vim keys are on and which mode the composer is in.
+func (t *Transcript) SetVim(on bool, mode string) {
+	if t == nil {
+		return
+	}
+	t.vim = on
+	if mode == "" {
+		mode = "insert"
+	}
+	t.vimMode = mode
 }
 
 func (t *Transcript) SetInput(line string, cursor int) {
@@ -576,6 +592,7 @@ func (t *Transcript) paintLocked() error {
 		return nil
 	}
 	t.noteActivity()
+	t.syncCursor()
 	frame := t.frame()
 	return t.screen.Paint(frame)
 }
@@ -849,7 +866,68 @@ func (t *Transcript) inputRow() string {
 	if cur > len(shown) {
 		cur = len(shown)
 	}
+	if t.vim && t.vimMode == "insert" {
+		return composerMark + shown
+	}
+	if t.vim {
+		return composerMark + blockAt(shown, cur)
+	}
 	return composerMark + shown[:cur] + "\x1b[7m \x1b[0m" + shown[cur:]
+}
+
+func vimLabel(mode string) string {
+	switch mode {
+	case "normal":
+		return "NORMAL"
+	case "visual":
+		return "VISUAL"
+	default:
+		return "INSERT"
+	}
+}
+
+func justifyStatus(left, right string, cols int) string {
+	rw := width.String(right)
+	if rw >= cols {
+		return dim + width.Clip(right, cols) + reset
+	}
+	room := cols - rw - 1
+	if room < 1 {
+		room = 1
+	}
+	left = width.Clip(left, room)
+	gap := cols - width.String(left) - rw
+	if gap < 1 {
+		gap = 1
+	}
+	return dim + left + reset + strings.Repeat(" ", gap) + right
+}
+
+func blockAt(s string, pos int) string {
+	if pos > len(s) {
+		pos = len(s)
+	}
+	if pos == len(s) {
+		return s + "\x1b[7m \x1b[0m"
+	}
+	_, size := utf8.DecodeRuneInString(s[pos:])
+	return s[:pos] + "\x1b[7m" + s[pos:pos+size] + "\x1b[0m" + s[pos+size:]
+}
+
+func (t *Transcript) syncCursor() {
+	shape := "\x1b[0 q"
+	if t.vim {
+		if t.vimMode == "insert" {
+			shape = "\x1b[6 q"
+		} else {
+			shape = "\x1b[2 q"
+		}
+	}
+	if shape == t.cursorShape {
+		return
+	}
+	t.cursorShape = shape
+	_ = t.screen.WriteRaw(shape)
 }
 
 func (t *Transcript) hintRow() string {
@@ -886,17 +964,15 @@ func (t *Transcript) hintRow() string {
 	}
 	text := strings.Join(left, " · ")
 	right := ""
-	if t.busy {
+	if t.vim {
+		right = vimLabel(t.vimMode)
+	} else if t.busy {
 		right = "esc esc to interrupt"
 	}
-	if right != "" && width.String(text)+width.String(right)+1 < t.cols {
-		gap := t.cols - width.String(text) - width.String(right)
-		if gap < 1 {
-			gap = 1
-		}
-		text = text + strings.Repeat(" ", gap) + right
+	if right == "" {
+		return dim + width.Clip(text, t.cols) + reset
 	}
-	return dim + width.Clip(text, t.cols) + reset
+	return justifyStatus(text, right, t.cols)
 }
 
 func tighten(s string) string {
