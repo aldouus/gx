@@ -104,6 +104,51 @@ func TestAttachImage(t *testing.T) {
 	}
 }
 
+func TestRenameShowsInSessionList(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GX_HOME", home)
+	s, err := session.Create(home, "/work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := s.ID()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Remember(home, id); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	tr := tui.NewTranscript(&buf, 80)
+	if err := handleSubmit(cli.Invocation{}, &config.File{}, home, t.TempDir(), tr, &buf, "/rename the plan", nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"sessions"}, nil, &out, &errOut); code != 0 {
+		t.Fatal(errOut.String())
+	}
+	if !strings.Contains(out.String(), id) || !strings.Contains(out.String(), "the plan") {
+		t.Fatal(out.String())
+	}
+}
+
+func TestNamedSubagentIDSurvives(t *testing.T) {
+	home := t.TempDir()
+	if err := rememberSubagent(home, "researcher", "abc"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(subagentIDPath(home, "researcher"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %o", info.Mode().Perm())
+	}
+	if rememberedSubagent(home, "researcher") != "abc" {
+		t.Fatal(rememberedSubagent(home, "researcher"))
+	}
+}
+
 func TestDoctorNoticesSubscription(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("GX_HOME", home)
