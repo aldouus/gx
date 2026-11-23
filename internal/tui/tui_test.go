@@ -150,6 +150,43 @@ func TestDetailShowsToolOutput(t *testing.T) {
 	}
 }
 
+func TestTurnSpacingMatchesFx(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewTranscript(&buf, 80)
+	tr.SetStatus("grok-4.7", "auto", true)
+	tr.SetPlace("", "medium")
+	if err := tr.User("hey"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Token("\n\nHey. What are you working on?\n\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.FinishText(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.User("weirdo"); err != nil {
+		t.Fatal(err)
+	}
+	plain := replay(buf.String())
+	hey := strings.Index(plain, "hey")
+	reply := strings.Index(plain, "Hey. What are you working on?")
+	next := strings.Index(plain, "weirdo")
+	if hey < 0 || reply < 0 || next < 0 {
+		t.Fatal(plain)
+	}
+	if strings.Count(plain[hey:reply], "\n") != 2 || strings.Count(plain[reply:next], "\n") != 2 {
+		t.Fatalf("gaps hey=%d reply=%d\n%s", strings.Count(plain[hey:reply], "\n"), strings.Count(plain[reply:next], "\n"), plain)
+	}
+	frame := tr.frame()
+	var tail []string
+	for _, row := range frame.Rows {
+		tail = append(tail, strip(row))
+	}
+	if len(tail) < 4 || !strings.HasPrefix(tail[len(tail)-4], "\u2503") || tail[len(tail)-3] != "" || tail[len(tail)-2] != "auto \u00b7 grok-4.7 \u00b7 medium" || tail[len(tail)-1] != "" {
+		t.Fatalf("footer %#v", tail)
+	}
+}
+
 func TestFooterChrome(t *testing.T) {
 	var buf bytes.Buffer
 	tr := NewTranscript(&buf, 80)
@@ -391,6 +428,92 @@ func TestPermissionNote(t *testing.T) {
 	if err != nil || choice != 1 || note != "use file 2" {
 		t.Fatalf("noted choice %d note %q err %v", choice, note, err)
 	}
+}
+
+func replay(s string) string {
+	var rows []string
+	row, col := 0, 0
+	write := func(b byte) {
+		for len(rows) <= row {
+			rows = append(rows, "")
+		}
+		line := rows[row]
+		for len(line) < col {
+			line += " "
+		}
+		if col < len(line) {
+			line = line[:col] + string(b) + line[col+1:]
+		} else {
+			line += string(b)
+		}
+		rows[row] = line
+		col++
+	}
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\n':
+			row++
+			col = 0
+		case '\r':
+			col = 0
+		default:
+			if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+				j := i + 2
+				n := 0
+				for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+					n = n*10 + int(s[j]-'0')
+					j++
+				}
+				if j >= len(s) {
+					return strings.Join(rows, "\n")
+				}
+				switch s[j] {
+				case 'A':
+					if n == 0 {
+						n = 1
+					}
+					row -= n
+					if row < 0 {
+						row = 0
+					}
+				case 'B':
+					if n == 0 {
+						n = 1
+					}
+					row += n
+				case 'G':
+					if n < 1 {
+						n = 1
+					}
+					col = n - 1
+				case 'K':
+					if row < len(rows) && col < len(rows[row]) {
+						rows[row] = rows[row][:col]
+					}
+				case 'M':
+					if n == 0 {
+						n = 1
+					}
+					if row < len(rows) {
+						end := row + n
+						if end > len(rows) {
+							end = len(rows)
+						}
+						rows = append(rows[:row], rows[end:]...)
+					}
+				}
+				i = j
+				continue
+			}
+			if s[i] == 0x1b {
+				continue
+			}
+			if s[i] >= 0x20 {
+				write(s[i])
+			}
+		}
+	}
+	return strings.TrimRight(strings.Join(rows, "\n"), "\n")
 }
 
 func strip(s string) string {

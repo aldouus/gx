@@ -47,6 +47,7 @@ type Transcript struct {
 	cursor int
 
 	live          string
+	opened        bool
 	archive       []string
 	tools         []ToolLine
 	toolStart     time.Time
@@ -359,38 +360,46 @@ func (t *Transcript) Token(s string) error {
 	if err := t.CommitTools(); err != nil {
 		return err
 	}
-	t.live += s
+	t.opened = true
+	t.live = tighten(t.live + s)
 	if err := t.Paint(); err != nil {
 		return err
 	}
 	for {
 		i := strings.IndexByte(t.live, '\n')
-		if i < 0 {
+		if i < 0 || strings.Trim(t.live[i+1:], "\n") == "" {
 			return nil
 		}
 		line := t.live[:i]
-		n := len(wrapPlain(line, t.cols))
 		t.live = t.live[i+1:]
-		t.screen.Release(n)
+		t.screen.Release(len(assistantRows(line, t.cols)))
 	}
 }
 
 // FinishText keeps the assistant text in scrollback and drops it from the frame.
 func (t *Transcript) FinishText() error {
-	if t.live == "" {
+	if !t.opened && t.live == "" {
 		return t.Paint()
 	}
-	if err := t.Paint(); err != nil {
+	text := strings.TrimRight(tighten(t.live), "\n")
+	if text != "" {
+		t.archive = append(t.archive, text)
+		t.lastAssistant = text
+		t.live = text
+		if err := t.Paint(); err != nil {
+			return err
+		}
+		n := len(assistantRows(text, t.cols))
+		t.live = ""
+		t.screen.Release(n)
+	} else {
+		t.live = ""
+	}
+	t.opened = false
+	if err := t.screen.Commit([]string{""}); err != nil {
 		return err
 	}
-	if t.live != "" {
-		t.archive = append(t.archive, t.live)
-		t.lastAssistant = t.live
-	}
-	n := len(wrapPlain(t.live, t.cols))
-	t.live = ""
-	t.screen.Release(n)
-	return nil
+	return t.Paint()
 }
 
 // ToolStart shows a running tool row.
@@ -411,6 +420,7 @@ func (t *Transcript) CommitTools() error {
 	if !t.toolStart.IsZero() {
 		lines = append(lines, "", dim+"  "+toolSummary(t.tools, time.Since(t.toolStart))+reset)
 	}
+	lines = append(lines, "")
 	t.tools = nil
 	t.toolStart = time.Time{}
 	return t.screen.Commit(lines)
@@ -530,9 +540,11 @@ func (t *Transcript) frame() Frame {
 	if t.ask != nil {
 		return t.permissionFrame(rows)
 	}
-	rows = append(rows, "", "")
-	if t.busy {
-		rows = append(rows, bold+"\u25cf Working"+reset, "")
+	if t.busy && t.live == "" && len(t.tools) == 0 {
+		rows = append(rows, bold+"\u25cf Working"+reset)
+	}
+	if t.live != "" || len(t.tools) > 0 || t.busy {
+		rows = append(rows, "")
 	}
 	if t.menu != nil {
 		return t.menuFrame(rows)
@@ -541,7 +553,7 @@ func (t *Transcript) frame() Frame {
 	rows = append(rows, t.inputRow())
 	rows = append(rows, t.completionRows()...)
 	if len(t.comps) == 0 {
-		rows = append(rows, t.hintRow(), "")
+		rows = append(rows, "", t.hintRow(), "")
 	}
 	col := width.String(composerMark) + width.String(t.input[:t.cursor]) + 1
 	if col < 1 {
@@ -702,11 +714,9 @@ func (t *Transcript) hintRow() string {
 			left = append(left, t.model)
 		}
 	}
-	effort := t.effort
-	if effort == "" {
-		effort = "medium"
+	if t.effort != "" {
+		left = append(left, t.effort)
 	}
-	left = append(left, effort)
 	if t.fast {
 		left = append(left, "\u26a1\ufe0e")
 	}
@@ -723,6 +733,21 @@ func (t *Transcript) hintRow() string {
 		text = text + strings.Repeat(" ", gap) + right
 	}
 	return dim + width.Clip(text, t.cols) + reset
+}
+
+func tighten(s string) string {
+	s = strings.TrimLeft(s, "\n")
+	for strings.Contains(s, "\n\n\n") {
+		s = strings.ReplaceAll(s, "\n\n\n", "\n\n")
+	}
+	return s
+}
+
+func assistantRows(s string, cols int) []string {
+	if s == "" {
+		return []string{""}
+	}
+	return wrapPlain(indentText(s), cols)
 }
 
 func indentText(s string) string {

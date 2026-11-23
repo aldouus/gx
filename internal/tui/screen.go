@@ -52,12 +52,7 @@ func (s *Screen) Commit(lines []string) error {
 		b.WriteString("\x1b[K\r\n")
 	}
 	if extra := s.height - len(lines); extra > 0 {
-		for i := 0; i < extra; i++ {
-			b.WriteString("\x1b[K")
-			if i+1 < extra {
-				b.WriteString("\x1b[1B\r")
-			}
-		}
+		fmt.Fprintf(&b, "\x1b[%dM", extra)
 	}
 	b.WriteString("\x1b[?2026l")
 	s.height = 0
