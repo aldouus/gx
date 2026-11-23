@@ -301,6 +301,39 @@ var SlashCommands = []Slash{
 	{"exit", "Exit"},
 }
 
+// CompleteSlash lists slash commands or login providers that match line.
+func CompleteSlash(line string) []Slash {
+	line = strings.TrimLeft(line, " \t")
+	if !strings.HasPrefix(line, "/") {
+		return nil
+	}
+	body := strings.TrimPrefix(line, "/")
+	if name, rest, ok := strings.Cut(body, " "); ok {
+		if name != "login" && name != "logout" {
+			return nil
+		}
+		rest = strings.TrimSpace(rest)
+		var out []Slash
+		for _, provider := range []string{"codex", "grok"} {
+			if rest == "" || strings.HasPrefix(provider, rest) {
+				label := "Sign in with " + strings.ToUpper(provider[:1]) + provider[1:]
+				if name == "logout" {
+					label = "Sign out of " + strings.ToUpper(provider[:1]) + provider[1:]
+				}
+				out = append(out, Slash{Name: name + " " + provider, Help: label})
+			}
+		}
+		return out
+	}
+	var out []Slash
+	for _, c := range SlashCommands {
+		if body == "" || strings.HasPrefix(c.Name, body) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // MatchSlash returns the command name and the rest of the line.
 func MatchSlash(line string) (name, rest string, ok bool) {
 	line = strings.TrimSpace(line)

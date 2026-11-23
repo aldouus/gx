@@ -1,6 +1,9 @@
 package cli
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestHelpAndVersion(t *testing.T) {
 	inv, err := Parse([]string{"help"})
@@ -72,6 +75,21 @@ func TestSlashTable(t *testing.T) {
 	name, _, ok = MatchSlash("/login")
 	if !ok || name != "login" {
 		t.Fatal("login missing")
+	}
+}
+
+func TestSlashCompletion(t *testing.T) {
+	got := CompleteSlash("/")
+	if len(got) < 2 || got[0].Name != "help" {
+		t.Fatalf("%+v", got)
+	}
+	got = CompleteSlash("/log")
+	if len(got) != 2 || got[0].Name != "login" || got[1].Name != "logout" {
+		t.Fatalf("%+v", got)
+	}
+	got = CompleteSlash("/login ")
+	if len(got) != 2 || !strings.Contains(got[0].Help, "Codex") || !strings.Contains(got[1].Help, "Grok") {
+		t.Fatalf("%+v", got)
 	}
 }
 

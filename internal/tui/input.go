@@ -24,6 +24,9 @@ type Action struct {
 	Interrupt bool
 	Redraw    bool
 	Detail    bool
+	Up        bool
+	Down      bool
+	Tab       bool
 }
 
 // Feed consumes one chunk of terminal input.
@@ -95,6 +98,11 @@ func (c *Composer) Feed(b []byte) Action {
 			c.Line = c.Line[c.Pos:]
 			c.Pos = 0
 			act.Redraw = true
+		case '\t':
+			b = b[1:]
+			c.disarm()
+			act.Tab = true
+			act.Redraw = true
 		case 0x1b:
 			rest, a := c.escape(b)
 			b = rest
@@ -159,9 +167,15 @@ func (c *Composer) escape(b []byte) ([]byte, Action) {
 	if len(b) >= 3 && b[1] == '[' {
 		switch b[2] {
 		case 'A':
+			if strings.HasPrefix(strings.TrimSpace(c.Line), "/") {
+				return b[3:], Action{Up: true}
+			}
 			c.history(-1)
 			return b[3:], Action{}
 		case 'B':
+			if strings.HasPrefix(strings.TrimSpace(c.Line), "/") {
+				return b[3:], Action{Down: true}
+			}
 			c.history(1)
 			return b[3:], Action{}
 		case 'C':

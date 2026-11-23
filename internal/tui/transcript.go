@@ -51,6 +51,9 @@ type Transcript struct {
 	askChoice     int
 	askNote       string
 	askAmend      bool
+	comps         []Completion
+	compSel       int
+	menu          *menuState
 	statusSeq     string
 	result        string
 	lastAssistant string
@@ -124,6 +127,9 @@ func (t *Transcript) SetBusy(busy bool) {
 		t.result = ""
 	}
 	t.noteActivity()
+	if !t.alt {
+		_ = t.Paint()
+	}
 }
 
 // SetResult records how the last turn ended: done or error.
@@ -195,6 +201,60 @@ func (t *Transcript) SetInput(line string, cursor int) {
 		cursor = len(line)
 	}
 	t.cursor = cursor
+}
+
+// Completion is one slash-command row in the footer menu.
+type Completion struct {
+	Label  string
+	Detail string
+}
+
+type menuState struct {
+	title string
+	items []string
+	sel   int
+}
+
+// SetCompletions shows the slash menu above the composer. An empty list hides it.
+func (t *Transcript) SetCompletions(items []Completion, selected int) {
+	if t == nil {
+		return
+	}
+	t.comps = items
+	if selected < 0 {
+		selected = 0
+	}
+	if len(items) > 0 && selected >= len(items) {
+		selected = len(items) - 1
+	}
+	t.compSel = selected
+}
+
+// Menu opens a footer selector. Login uses this before a provider is chosen.
+func (t *Transcript) Menu(title string, items []string) error {
+	t.menu = &menuState{title: title, items: append([]string{}, items...)}
+	return t.Paint()
+}
+
+// SetMenu moves the selector.
+func (t *Transcript) SetMenu(sel int) error {
+	if t.menu == nil {
+		return nil
+	}
+	if sel < 0 {
+		sel = 0
+	}
+	if sel >= len(t.menu.items) {
+		sel = len(t.menu.items) - 1
+	}
+	t.menu.sel = sel
+	return t.Paint()
+}
+
+// ClearMenu closes the selector.
+func (t *Transcript) ClearMenu() error {
+	t.menu = nil
+	return t.Paint()
 }
 
 // Welcome paints the gx wordmark once, above the first prompt.
@@ -395,6 +455,14 @@ func (t *Transcript) frame() Frame {
 	if t.ask != nil {
 		return t.permissionFrame(rows)
 	}
+	rows = append(rows, "")
+	if t.busy {
+		rows = append(rows, dim+"\u23fa Working"+reset)
+	}
+	rows = append(rows, t.completionRows()...)
+	if t.menu != nil {
+		return t.menuFrame(rows)
+	}
 	inputRow := len(rows)
 	rows = append(rows, t.inputRow())
 	rows = append(rows, t.hintRow())
@@ -464,6 +532,68 @@ func (t *Transcript) noteRow() string {
 
 func (t *Transcript) permissionHint() string {
 	return dim + width.Clip("1-3 choose   arrows move   tab amend   enter confirm   y once   n deny", t.cols) + reset
+}
+
+func (t *Transcript) completionRows() []string {
+	if len(t.comps) == 0 {
+		return nil
+	}
+	n := len(t.comps)
+	start := 0
+	if n > 6 {
+		start = t.compSel - 2
+		if start < 0 {
+			start = 0
+		}
+		if start+6 > n {
+			start = n - 6
+		}
+	}
+	end := start + 6
+	if end > n {
+		end = n
+	}
+	widthName := 0
+	for _, c := range t.comps[start:end] {
+		if w := width.String(c.Label); w > widthName {
+			widthName = w
+		}
+	}
+	var rows []string
+	for i := start; i < end; i++ {
+		c := t.comps[i]
+		mark := "  "
+		style := dim
+		if i == t.compSel {
+			mark = "\u203a "
+			style = bold
+		}
+		gap := widthName - width.String(c.Label)
+		if gap < 1 {
+			gap = 1
+		}
+		detail := c.Detail
+		if t.cols > widthName+6 {
+			detail = width.Clip(detail, t.cols-widthName-6)
+		}
+		row := style + mark + c.Label + reset + dim + strings.Repeat(" ", gap) + detail + reset
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func (t *Transcript) menuFrame(rows []string) Frame {
+	rows = append(rows, bold+t.menu.title+reset)
+	choiceRow := len(rows)
+	for i, item := range t.menu.items {
+		if i == t.menu.sel {
+			rows = append(rows, bold+"\u203a "+item+reset)
+			continue
+		}
+		rows = append(rows, dim+"  "+item+reset)
+	}
+	rows = append(rows, dim+"arrows move   enter confirm   esc cancel"+reset)
+	return Frame{Rows: rows, CursorRow: choiceRow + t.menu.sel, CursorCol: 3}
 }
 
 func (t *Transcript) inputRow() string {

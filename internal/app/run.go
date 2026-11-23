@@ -752,6 +752,7 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 	var images []string
 	continued := inv.Continue || inv.Resume != ""
 	var comp tui.Composer
+	slashSel := 0
 	tr.SetInput(comp.Line, comp.Pos)
 	if err := tr.Paint(); err != nil {
 		fmt.Fprintln(errOut, err)
@@ -777,9 +778,41 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 		if act.Detail {
 			tr.ToggleDetail()
 		}
+		matches := cli.CompleteSlash(comp.Line)
+		if act.Up && len(matches) > 0 {
+			slashSel--
+			if slashSel < 0 {
+				slashSel = len(matches) - 1
+			}
+		}
+		if act.Down && len(matches) > 0 {
+			slashSel++
+			if slashSel >= len(matches) {
+				slashSel = 0
+			}
+		}
+		if slashSel >= len(matches) {
+			slashSel = 0
+		}
+		if act.Tab && len(matches) > 0 {
+			comp.Line = "/" + matches[slashSel].Name
+			if !strings.Contains(matches[slashSel].Name, " ") {
+				comp.Line += " "
+			}
+			comp.Pos = len(comp.Line)
+			matches = cli.CompleteSlash(comp.Line)
+			slashSel = 0
+		}
+		if act.Submit != "" && len(matches) > 0 {
+			if _, _, ok := cli.MatchSlash(act.Submit); !ok {
+				act.Submit = "/" + strings.Fields(matches[slashSel].Name)[0]
+			}
+		}
+		tr.SetCompletions(slashRows(matches), slashSel)
 		tr.SetCtrlC(comp.Armed)
 		tr.SetInput(comp.Line, comp.Pos)
 		if act.Submit != "" {
+			tr.SetCompletions(nil, 0)
 			err := handleSubmit(inv, &settings, home, cwd, tr, errOut, act.Submit, &continued, inbox, grants, &images)
 			if err == errQuit {
 				return 0
@@ -1482,10 +1515,38 @@ func agentList(inbox *agent.Mailbox) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+func slashRows(matches []cli.Slash) []tui.Completion {
+	if len(matches) == 0 {
+		return nil
+	}
+	out := make([]tui.Completion, len(matches))
+	for i, m := range matches {
+		label := "/" + m.Name
+		detail := m.Help
+		if strings.Contains(m.Name, " ") {
+			detail = m.Help
+		}
+		out[i] = tui.Completion{Label: label, Detail: detail}
+	}
+	return out
+}
+
 func loginSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, settings config.File) error {
-	name := "codex"
-	if rest != "" {
-		name = rest
+	name := strings.TrimSpace(rest)
+	if name == "" {
+		items := []string{"Sign in with Codex", "Sign in with Grok"}
+		if err := tr.Menu("Sign in", items); err != nil {
+			return err
+		}
+		sel, err := tui.DecideMenu(os.Stdin, len(items), tr.SetMenu)
+		_ = tr.ClearMenu()
+		if err != nil {
+			return tr.User(err.Error())
+		}
+		if sel < 0 {
+			return tr.User("login cancelled")
+		}
+		name = []string{"codex", "grok"}[sel]
 	}
 	if name == "vercel" {
 		return tr.User("vercel login is not part of this port")
@@ -1510,9 +1571,21 @@ func loginSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, setti
 }
 
 func logoutSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, settings config.File) error {
-	name := "codex"
-	if rest != "" {
-		name = rest
+	name := strings.TrimSpace(rest)
+	if name == "" {
+		items := []string{"Sign out of Codex", "Sign out of Grok"}
+		if err := tr.Menu("Sign out", items); err != nil {
+			return err
+		}
+		sel, err := tui.DecideMenu(os.Stdin, len(items), tr.SetMenu)
+		_ = tr.ClearMenu()
+		if err != nil {
+			return tr.User(err.Error())
+		}
+		if sel < 0 {
+			return tr.User("logout cancelled")
+		}
+		name = []string{"codex", "grok"}[sel]
 	}
 	if err := auth.Logout(context.Background(), home, name); err != nil {
 		return tr.User(err.Error())

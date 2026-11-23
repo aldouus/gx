@@ -254,6 +254,39 @@ func TestProgramStatus(t *testing.T) {
 	}
 }
 
+func TestSlashMenuAndWorkingGap(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewTranscript(&buf, 80)
+	tr.SetCompletions([]Completion{
+		{Label: "/login", Detail: "Sign in to codex or grok"},
+		{Label: "/logout", Detail: "Sign out of codex or grok"},
+	}, 0)
+	tr.SetInput("/log", 4)
+	if err := tr.Paint(); err != nil {
+		t.Fatal(err)
+	}
+	plain := strip(buf.String())
+	if !strings.Contains(plain, "/login") || !strings.Contains(plain, "/logout") {
+		t.Fatal(plain)
+	}
+	tr.SetCompletions(nil, 0)
+	tr.SetBusy(true)
+	if !strings.Contains(strip(buf.String()), "Working") {
+		t.Fatal(strip(buf.String()))
+	}
+	if err := tr.Menu("Sign in", []string{"Sign in with Codex", "Sign in with Grok"}); err != nil {
+		t.Fatal(err)
+	}
+	plain = strip(buf.String())
+	if !strings.Contains(plain, "Sign in with Codex") || !strings.Contains(plain, "Sign in with Grok") {
+		t.Fatal(plain)
+	}
+	sel, err := DecideMenu(strings.NewReader("\x1b[B\n"), 2, nil)
+	if err != nil || sel != 1 {
+		t.Fatalf("sel %d err %v", sel, err)
+	}
+}
+
 func TestWelcomeLogoIsGX(t *testing.T) {
 	var buf bytes.Buffer
 	tr := NewTranscript(&buf, 80)
