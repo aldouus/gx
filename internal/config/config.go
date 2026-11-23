@@ -12,12 +12,14 @@ import (
 
 // Settings is the on-disk configuration a person edits with fx config.
 type Settings struct {
-	Model          string `json:"model,omitempty"`
-	PermissionMode string `json:"permission_mode,omitempty"`
-	Provider       string `json:"provider,omitempty"`
-	BaseURL        string `json:"base_url,omitempty"`
-	Profile        string `json:"profile,omitempty"`
-	ServiceTier    string `json:"service_tier,omitempty"`
+	Model          string   `json:"model,omitempty"`
+	PermissionMode string   `json:"permission_mode,omitempty"`
+	Provider       string   `json:"provider,omitempty"`
+	BaseURL        string   `json:"base_url,omitempty"`
+	Profile        string   `json:"profile,omitempty"`
+	ServiceTier    string   `json:"service_tier,omitempty"`
+	Effort         string   `json:"effort,omitempty"`
+	ExtraDirs      []string `json:"-"`
 }
 
 // Profile is an agent profile: tools, model, prompt, and permission mode.
@@ -94,15 +96,50 @@ func Save(home string, f File) error {
 	return os.WriteFile(settingsPath(home), b, 0o600)
 }
 
-// LoadProfile reads ~/.gx/agents/<name>.json, then <workspace>/.gx/agents/<name>.json.
+// Project is the repo-safe subset of .fx.json.
+type Project struct {
+	Context            string   `json:"context,omitempty"`
+	MaxAgentSteps      int      `json:"max_agent_steps,omitempty"`
+	MaxToolResultBytes int      `json:"max_tool_result_bytes,omitempty"`
+	ProviderOrder      []string `json:"provider_order,omitempty"`
+	ProviderStrict     bool     `json:"provider_strict,omitempty"`
+}
+
+// LoadProject reads <workspace>/.fx.json. A missing file is empty, not an error.
+// Keys outside the repo-safe set are ignored.
+func LoadProject(workspace string) (Project, error) {
+	var p Project
+	if workspace == "" {
+		return p, nil
+	}
+	b, err := os.ReadFile(filepath.Join(workspace, ".fx.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return p, nil
+	}
+	if err != nil {
+		return p, err
+	}
+	if len(bytesTrim(b)) == 0 {
+		return p, nil
+	}
+	if err := json.Unmarshal(b, &p); err != nil {
+		return p, err
+	}
+	return p, nil
+}
+
+// LoadProfile reads agents/<name>/profile.json plus prompt.md, then the
+// legacy agents/<name>.json file. Workspace wins over the home directory.
 func LoadProfile(home, workspace, name string) (Profile, error) {
 	candidates := []string{
+		filepath.Join(workspace, ".gx", "agents", name),
+		filepath.Join(home, "agents", name),
 		filepath.Join(workspace, ".gx", "agents", name+".json"),
 		filepath.Join(home, "agents", name+".json"),
 	}
 	var last error
 	for _, path := range candidates {
-		b, err := os.ReadFile(path)
+		info, err := os.Stat(path)
 		if errors.Is(err, os.ErrNotExist) {
 			last = err
 			continue
@@ -110,9 +147,33 @@ func LoadProfile(home, workspace, name string) (Profile, error) {
 		if err != nil {
 			return Profile{}, err
 		}
+		var b []byte
+		var prompt string
+		if info.IsDir() {
+			b, err = os.ReadFile(filepath.Join(path, "profile.json"))
+			if errors.Is(err, os.ErrNotExist) {
+				last = err
+				continue
+			}
+			if err != nil {
+				return Profile{}, err
+			}
+			prompt, err = readIf(filepath.Join(path, "prompt.md"))
+			if err != nil {
+				return Profile{}, err
+			}
+		} else {
+			b, err = os.ReadFile(path)
+			if err != nil {
+				return Profile{}, err
+			}
+		}
 		var p Profile
 		if err := json.Unmarshal(b, &p); err != nil {
 			return Profile{}, err
+		}
+		if prompt != "" {
+			p.Prompt = prompt
 		}
 		if p.Name == "" {
 			p.Name = name

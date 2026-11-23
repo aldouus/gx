@@ -68,4 +68,31 @@ func TestProfileAndAgents(t *testing.T) {
 	if text != "home rule\n\nrepo rule" {
 		t.Fatalf("%q", text)
 	}
+	dir := filepath.Join(home, "agents", "writer")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "profile.json"), []byte(`{"model":"writer-model"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "prompt.md"), []byte("write clearly"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err = LoadProfile(home, ws, "writer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Model != "writer-model" || p.Prompt != "write clearly" {
+		t.Fatalf("%+v", p)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".fx.json"), []byte(`{"context":"repo context","max_agent_steps":3,"model":"nope"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	proj, err := LoadProject(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proj.Context != "repo context" || proj.MaxAgentSteps != 3 {
+		t.Fatalf("%+v", proj)
+	}
 }
