@@ -1630,9 +1630,53 @@ func modelSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, setti
 		return tr.User("model cancelled")
 	}
 	settings.Model = ids[sel]
+	if err := chooseEffort(home, settings, tr); err != nil {
+		return err
+	}
 	_ = config.Save(home, *settings)
 	tr.SetStatus(settings.Model, settings.PermissionMode, signedIn(home))
-	return tr.User("model " + settings.Model)
+	tr.SetPlace("", settings.Effort)
+	return tr.User("model " + settings.Model + "\neffort " + shownEffort(settings.Effort))
+}
+
+func chooseEffort(home string, settings *config.File, tr *tui.Transcript) error {
+	levels := effortLevels()
+	items := make([]string, len(levels))
+	for i, level := range levels {
+		items[i] = level
+		if level == shownEffort(settings.Effort) {
+			items[i] += "  current"
+		}
+	}
+	if err := tr.Menu("Effort  "+settings.Model, items); err != nil {
+		return err
+	}
+	sel, err := tui.DecideMenu(os.Stdin, len(items), tr.SetMenu)
+	_ = tr.ClearMenu()
+	if err != nil {
+		return tr.User(err.Error())
+	}
+	if sel < 0 {
+		return nil
+	}
+	if levels[sel] == "default" {
+		settings.Effort = ""
+	} else {
+		settings.Effort = levels[sel]
+	}
+	_ = home
+	return nil
+}
+
+func effortLevels() []string {
+	return []string{"default", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
+}
+
+func shownEffort(effort string) string {
+	if effort == "" {
+		return "default"
+	}
+	return effort
 }
 
 func loginSlash(home, rest string, tr *tui.Transcript, inv cli.Invocation, settings config.File) error {
