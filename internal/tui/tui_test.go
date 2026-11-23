@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTranscriptOrderAndDiff(t *testing.T) {
@@ -150,6 +151,34 @@ func TestDetailShowsToolOutput(t *testing.T) {
 	}
 }
 
+func TestThinkingBlinkMatchesFx(t *testing.T) {
+	start := time.Unix(0, 0)
+	if !thinkingBlink(start, start) || !thinkingBlink(start, start.Add(499*time.Millisecond)) {
+		t.Fatal("marker should be lit for the first half second")
+	}
+	if thinkingBlink(start, start.Add(500*time.Millisecond)) || thinkingBlink(start, start.Add(999*time.Millisecond)) {
+		t.Fatal("marker should be dark for the second half second")
+	}
+	if !thinkingBlink(start, start.Add(time.Second)) {
+		t.Fatal("marker should relight when the seconds digit advances")
+	}
+	lit := thinkingRow("Thinking", start, start)
+	if !strings.Contains(lit, "\u2022 Thinking") || strings.Contains(lit, "(0s)") {
+		t.Fatal(lit)
+	}
+	dark := thinkingRow("Thinking", start, start.Add(500*time.Millisecond))
+	if strings.Contains(dark, "\u2022") || !strings.Contains(dark, "Thinking") {
+		t.Fatal(dark)
+	}
+	counter := thinkingRow("Thinking", start, start.Add(5*time.Second))
+	if !strings.Contains(counter, "Thinking (5s)") {
+		t.Fatal(counter)
+	}
+	if formatElapsed(18*60) != "18m0s" || formatElapsed(3663) != "1h1m3s" {
+		t.Fatal(formatElapsed(18*60), formatElapsed(3663))
+	}
+}
+
 func TestTurnSpacingMatchesFx(t *testing.T) {
 	var buf bytes.Buffer
 	tr := NewTranscript(&buf, 80)
@@ -218,6 +247,7 @@ func TestFooterChrome(t *testing.T) {
 	if !strings.Contains(strip(buf.String()), "working") {
 		t.Fatal(strip(buf.String()))
 	}
+	tr.SetBusy(false)
 }
 
 func TestPermissionFooterAndKeys(t *testing.T) {
@@ -264,6 +294,7 @@ func TestProgramStatus(t *testing.T) {
 		t.Fatal(buf.String())
 	}
 	tr.SetBusy(true)
+	defer tr.SetBusy(false)
 	if !strings.Contains(buf.String(), "\x1b]7501;state=working:app=gx\x1b\\") {
 		t.Fatal("missing working")
 	}
@@ -369,9 +400,10 @@ func TestSlashMenuAndWorkingGap(t *testing.T) {
 	}
 	tr.SetCompletions(nil, 0)
 	tr.SetBusy(true)
-	if !strings.Contains(strip(buf.String()), "Working") {
+	if !strings.Contains(strip(buf.String()), "Thinking") {
 		t.Fatal(strip(buf.String()))
 	}
+	tr.SetBusy(false)
 	if err := tr.Menu("Sign in", []string{"Sign in with Codex", "Sign in with Grok"}); err != nil {
 		t.Fatal(err)
 	}

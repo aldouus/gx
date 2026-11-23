@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+	"sync"
 	"time"
 
 	"gx/internal/width"
@@ -65,6 +66,10 @@ type Transcript struct {
 	hideSession   bool
 	hideWorkspace bool
 	fast          bool
+
+	busyAt   time.Time
+	stopTick chan struct{}
+	mu       sync.Mutex
 }
 
 // SetFast shows or hides the fast-mode marker in the status line.
@@ -135,13 +140,25 @@ func (t *Transcript) SetPlace(cwd, effort string) {
 }
 
 func (t *Transcript) SetBusy(busy bool) {
+	t.mu.Lock()
 	t.busy = busy
+	var stop chan struct{}
 	if busy {
 		t.result = ""
+		t.busyAt = time.Now()
+		stop = make(chan struct{})
+		t.stopTick = stop
+	} else if t.stopTick != nil {
+		close(t.stopTick)
+		t.stopTick = nil
+		t.busyAt = time.Time{}
 	}
-	t.noteActivity()
 	if !t.alt {
-		_ = t.Paint()
+		_ = t.paintLocked()
+	}
+	t.mu.Unlock()
+	if stop != nil {
+		go t.tick(stop)
 	}
 }
 
@@ -160,6 +177,7 @@ func (t *Transcript) End() {
 	if t == nil || t.screen == nil {
 		return
 	}
+	t.SetBusy(false)
 	_ = t.screen.WriteRaw("\x1b]7501;state=clear\x1b\\")
 }
 
@@ -357,12 +375,14 @@ func (t *Transcript) User(text string) error {
 // Token appends streamed assistant text. A finished line leaves the frame
 // and stays in scrollback.
 func (t *Transcript) Token(s string) error {
-	if err := t.CommitTools(); err != nil {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.commitToolsLocked(); err != nil {
 		return err
 	}
 	t.opened = true
 	t.live = tighten(t.live + s)
-	if err := t.Paint(); err != nil {
+	if err := t.paintLocked(); err != nil {
 		return err
 	}
 	for {
@@ -378,15 +398,17 @@ func (t *Transcript) Token(s string) error {
 
 // FinishText keeps the assistant text in scrollback and drops it from the frame.
 func (t *Transcript) FinishText() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if !t.opened && t.live == "" {
-		return t.Paint()
+		return t.paintLocked()
 	}
 	text := strings.TrimRight(tighten(t.live), "\n")
 	if text != "" {
 		t.archive = append(t.archive, text)
 		t.lastAssistant = text
 		t.live = text
-		if err := t.Paint(); err != nil {
+		if err := t.paintLocked(); err != nil {
 			return err
 		}
 		n := len(assistantRows(text, t.cols))
@@ -399,20 +421,28 @@ func (t *Transcript) FinishText() error {
 	if err := t.screen.Commit([]string{""}); err != nil {
 		return err
 	}
-	return t.Paint()
+	return t.paintLocked()
 }
 
 // ToolStart shows a running tool row.
 func (t *Transcript) ToolStart(name, detail string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if len(t.tools) == 0 {
 		t.toolStart = time.Now()
 	}
 	t.tools = append(t.tools, ToolLine{Name: name, Detail: detail, Running: true})
-	return t.Paint()
+	return t.paintLocked()
 }
 
 // CommitTools writes the current tool tree into scrollback and clears it.
 func (t *Transcript) CommitTools() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.commitToolsLocked()
+}
+
+func (t *Transcript) commitToolsLocked() error {
 	if t == nil || len(t.tools) == 0 {
 		return nil
 	}
@@ -428,6 +458,8 @@ func (t *Transcript) CommitTools() error {
 
 // ToolDone finishes the matching tool row.
 func (t *Transcript) ToolDone(name, output string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	for i := len(t.tools) - 1; i >= 0; i-- {
 		if t.tools[i].Name == name && t.tools[i].Running {
 			t.tools[i].Running = false
@@ -435,7 +467,7 @@ func (t *Transcript) ToolDone(name, output string) error {
 			break
 		}
 	}
-	return t.Paint()
+	return t.paintLocked()
 }
 
 // Permission shows an approval prompt. Choice 0 is allow once.
@@ -482,12 +514,32 @@ func (t *Transcript) ClearPermission() error {
 
 // Paint redraws the frame. The alternate transcript owns the screen until it closes.
 func (t *Transcript) Paint() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.paintLocked()
+}
+
+func (t *Transcript) paintLocked() error {
 	if t.alt {
 		return nil
 	}
 	t.noteActivity()
 	frame := t.frame()
 	return t.screen.Paint(frame)
+}
+
+func (t *Transcript) tick(stop <-chan struct{}) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case now := <-ticker.C:
+			_ = now
+			_ = t.Paint()
+		}
+	}
 }
 
 // ProgramStatus is an OSC 7501 report. Terminals that do not implement it ignore the sequence.
@@ -540,8 +592,8 @@ func (t *Transcript) frame() Frame {
 	if t.ask != nil {
 		return t.permissionFrame(rows)
 	}
-	if t.busy && t.live == "" && len(t.tools) == 0 {
-		rows = append(rows, bold+"\u25cf Working"+reset)
+	if t.busy {
+		rows = append(rows, thinkingRow(t.activityPhase(), t.busyAt, time.Now()))
 	}
 	if t.live != "" || len(t.tools) > 0 || t.busy {
 		rows = append(rows, "")
@@ -563,6 +615,58 @@ func (t *Transcript) frame() Frame {
 }
 
 const composerMark = "┃ "
+
+const thinkingStyle = "\x1b[38;5;252m"
+
+func (t *Transcript) activityPhase() string {
+	switch {
+	case len(t.tools) > 0:
+		return "Running"
+	case t.live != "":
+		return "Generating"
+	default:
+		return "Thinking"
+	}
+}
+
+func thinkingRow(phase string, started, now time.Time) string {
+	label := "\u2022 " + phase
+	if !started.IsZero() {
+		if secs := int(now.Sub(started) / time.Second); secs >= 1 {
+			label += " (" + formatElapsed(secs) + ")"
+		}
+	}
+	marker := "\u2022"
+	if !started.IsZero() && !thinkingBlink(started, now) {
+		marker = " "
+	}
+	rest := strings.TrimPrefix(label, "\u2022")
+	return thinkingStyle + marker + rest + reset
+}
+
+func thinkingBlink(started, now time.Time) bool {
+	if started.IsZero() || now.Before(started) {
+		return true
+	}
+	half := int(now.Sub(started) / (500 * time.Millisecond))
+	return half%2 == 0
+}
+
+func formatElapsed(seconds int) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	secs := seconds % 60
+	mins := (seconds / 60) % 60
+	hours := seconds / 3600
+	if hours > 0 {
+		return itoa(hours) + "h" + itoa(mins) + "m" + itoa(secs) + "s"
+	}
+	if mins > 0 {
+		return itoa(mins) + "m" + itoa(secs) + "s"
+	}
+	return itoa(secs) + "s"
+}
 
 func (t *Transcript) permissionFrame(rows []string) Frame {
 	rows = append(rows, bold+"Allow "+t.ask.Name+"?"+reset)
