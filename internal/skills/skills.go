@@ -23,7 +23,7 @@ const (
 // Skill is a discovered skill. Path is the SKILL.md file. Source is the root
 // it came from. Discover does not include the instruction body; use Load.
 type Skill struct {
-	Name, Description, Path, Source string
+	Name, Description, Path, Source, Location string
 }
 
 type root struct {
@@ -143,6 +143,7 @@ func scanRoot(r root, seen map[string]struct{}) []Skill {
 			Description: description,
 			Path:        skillPath,
 			Source:      r.source,
+			Location:    "file://" + skillPath,
 		})
 	}
 	return out

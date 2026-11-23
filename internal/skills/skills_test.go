@@ -44,11 +44,11 @@ func TestDiscoverPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Skill{
-		{Name: "alpha", Description: "from-home", Path: filepath.Join(dirs[0], "alpha", "SKILL.md"), Source: sources[0]},
-		{Name: "beta", Description: "fx-only", Path: filepath.Join(dirs[1], "beta", "SKILL.md"), Source: sources[1]},
-		{Name: "gamma", Description: "gx-only", Path: filepath.Join(dirs[2], "gamma", "SKILL.md"), Source: sources[2]},
-		{Name: "delta", Description: "claude-only", Path: filepath.Join(dirs[4], "delta", "SKILL.md"), Source: sources[4]},
-		{Name: "epsilon", Description: "agents-only", Path: filepath.Join(dirs[5], "epsilon", "SKILL.md"), Source: sources[5]},
+		{Name: "alpha", Description: "from-home", Path: filepath.Join(dirs[0], "alpha", "SKILL.md"), Source: sources[0], Location: "file://" + filepath.Join(dirs[0], "alpha", "SKILL.md")},
+		{Name: "beta", Description: "fx-only", Path: filepath.Join(dirs[1], "beta", "SKILL.md"), Source: sources[1], Location: "file://" + filepath.Join(dirs[1], "beta", "SKILL.md")},
+		{Name: "gamma", Description: "gx-only", Path: filepath.Join(dirs[2], "gamma", "SKILL.md"), Source: sources[2], Location: "file://" + filepath.Join(dirs[2], "gamma", "SKILL.md")},
+		{Name: "delta", Description: "claude-only", Path: filepath.Join(dirs[4], "delta", "SKILL.md"), Source: sources[4], Location: "file://" + filepath.Join(dirs[4], "delta", "SKILL.md")},
+		{Name: "epsilon", Description: "agents-only", Path: filepath.Join(dirs[5], "epsilon", "SKILL.md"), Source: sources[5], Location: "file://" + filepath.Join(dirs[5], "epsilon", "SKILL.md")},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d skills %#v, want %d", len(got), got, len(want))
