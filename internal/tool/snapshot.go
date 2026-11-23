@@ -20,6 +20,8 @@ type generation struct {
 	fp      string
 	env     []string
 	prelude string
+	funcs   string
+	opts    string
 }
 
 var (
@@ -134,7 +136,7 @@ func generationFor(ctx context.Context, shell, home string) (generation, error) 
 func capture(ctx context.Context, shell, home string) (generation, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	const dump = "printf '%s\n' '---ENV---'\nenv\nprintf '%s\n' '---PRELUDE---'\nalias 2>/dev/null || true\n"
+	const dump = "printf '%s\n' '---ENV---'\nenv\nprintf '%s\n' '---PRELUDE---'\nalias 2>/dev/null || true\nprintf '%s\n' '---FUNCS---'\nif [ -n \"$ZSH_VERSION\" ]; then whence -f 2>/dev/null || true; else declare -f 2>/dev/null || true; fi\nprintf '%s\n' '---OPTS---'\nif [ -n \"$ZSH_VERSION\" ]; then setopt 2>/dev/null || true; else shopt -p 2>/dev/null || true; fi\n"
 	cmd := exec.CommandContext(ctx, shell, "-lic", dump)
 	cmd.Dir = home
 	var stdout, stderr bytes.Buffer
@@ -143,26 +145,44 @@ func capture(ctx context.Context, shell, home string) (generation, error) {
 	if err := cmd.Run(); err != nil {
 		return generation{}, fmt.Errorf("shell snapshot: %w", err)
 	}
-	env, prelude := parseDump(stdout.String())
+	env, prelude, funcs, opts := parseDump(stdout.String())
 	if len(env) == 0 {
 		return generation{}, fmt.Errorf("shell snapshot produced no environment")
 	}
-	return generation{env: env, prelude: prelude}, nil
+	return generation{env: env, prelude: prelude, funcs: funcs, opts: opts}, nil
 }
 
-func parseDump(text string) (env []string, prelude string) {
+func parseDump(text string) (env []string, prelude, funcs, opts string) {
 	const envMark = "---ENV---"
 	const preMark = "---PRELUDE---"
+	const funcMark = "---FUNCS---"
+	const optMark = "---OPTS---"
 	envAt := strings.Index(text, envMark)
 	preAt := strings.Index(text, preMark)
+	funcAt := strings.Index(text, funcMark)
+	optAt := strings.Index(text, optMark)
 	if envAt < 0 {
-		return nil, ""
+		return nil, "", "", ""
 	}
 	envText := text[envAt+len(envMark):]
 	preText := ""
 	if preAt >= 0 {
 		envText = text[envAt+len(envMark) : preAt]
 		preText = text[preAt+len(preMark):]
+		if funcAt >= 0 {
+			preText = text[preAt+len(preMark) : funcAt]
+		}
+	}
+	funcText := ""
+	if funcAt >= 0 {
+		funcText = text[funcAt+len(funcMark):]
+		if optAt >= 0 {
+			funcText = text[funcAt+len(funcMark) : optAt]
+		}
+	}
+	optText := ""
+	if optAt >= 0 {
+		optText = text[optAt+len(optMark):]
 	}
 	skip := map[string]bool{"PWD": true, "OLDPWD": true, "SHLVL": true, "_": true}
 	for _, line := range strings.Split(envText, "\n") {
@@ -181,14 +201,37 @@ func parseDump(text string) (env []string, prelude string) {
 		}
 		lines = append(lines, line)
 	}
-	return env, strings.Join(lines, "\n")
+	return env, strings.Join(lines, "\n"), strings.TrimSpace(funcText), formatOpts(optText)
+}
+
+func formatOpts(text string) string {
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if line == "" || strings.HasPrefix(line, "set ") {
+			continue
+		}
+		if strings.HasPrefix(line, "shopt ") || strings.HasPrefix(line, "setopt ") {
+			lines = append(lines, line)
+			continue
+		}
+		if strings.Contains(line, " ") {
+			continue
+		}
+		lines = append(lines, "setopt "+line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (g generation) command(userCmd string) (string, []string, []string) {
-	script := userCmd
-	if g.prelude != "" {
-		script = g.prelude + "\n" + userCmd
+	var parts []string
+	for _, part := range []string{g.opts, g.funcs, g.prelude, userCmd} {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
+		parts = append(parts, part)
 	}
+	script := strings.Join(parts, "\n")
 	env := append([]string{}, g.env...)
 	env = append(env, "AI_AGENT=fx")
 	base := strings.ToLower(filepath.Base(g.shell))

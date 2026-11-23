@@ -112,6 +112,55 @@ exit 1
 	}
 }
 
+func TestSnapshotReplaysFunctions(t *testing.T) {
+	home := t.TempDir()
+	shellPath := filepath.Join(home, "fake-sh")
+	script := `#!/bin/sh
+if [ "$1" = "-lic" ]; then
+  printf '%s\n' '---ENV---'
+  printf '%s\n' 'PATH=/bin:/usr/bin'
+  printf '%s\n' '---PRELUDE---'
+  printf '%s\n' '---FUNCS---'
+  printf '%s\n' 'hello() { printf from-func; }'
+  printf '%s\n' '---OPTS---'
+  printf '%s\n' 'shopt -s histappend'
+  exit 0
+fi
+if [ "$1" = "-c" ]; then
+  sh -c "$2"
+  exit $?
+fi
+exit 1
+`
+	if err := os.WriteFile(shellPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	old := resolveShell
+	resolveShell = func() string { return shellPath }
+	t.Cleanup(func() { resolveShell = old })
+	ResetSnapshot()
+	t.Cleanup(ResetSnapshot)
+	out, err := Shell(Workspace{Roots: []string{home}}).Run(t.Context(), []byte(`{"action":"run","command":"hello","profile":"user","yield_time_ms":5000}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "from-func") {
+		t.Fatalf("function was not replayed: %s", out)
+	}
+}
+
+func TestTTYIsATerminal(t *testing.T) {
+	ws := Workspace{Roots: []string{t.TempDir()}}
+	out, err := Shell(ws).Run(t.Context(), []byte(`{"action":"run","command":"tty","profile":"clean","tty":true,"yield_time_ms":5000}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "/dev/") {
+		t.Fatalf("tty was not a terminal: %s", out)
+	}
+}
+
 func TestCleanShellSkipsSnapshot(t *testing.T) {
 	home := t.TempDir()
 	shellPath := filepath.Join(home, "fake-sh")

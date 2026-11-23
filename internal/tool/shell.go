@@ -28,7 +28,7 @@ func (shellTool) Description() string {
 func (shellTool) ReadOnly() bool      { return false }
 func (shellTool) NeedsApproval() bool { return true }
 func (shellTool) Schema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"action":{"type":"string","enum":["run","interact","stop"]},"command":{"type":"string","description":"For run."},"cwd":{"type":"string","description":"For run. Defaults to the workspace."},"profile":{"type":"string","enum":["clean","user"],"description":"For run: clean skips the user's startup files."},"yield_time_ms":{"type":"integer"},"timeout_ms":{"type":"integer"},"session_id":{"type":"string"},"chars":{"type":"string"},"force":{"type":"boolean"}},"required":["action"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"action":{"type":"string","enum":["run","interact","stop"]},"command":{"type":"string","description":"For run."},"cwd":{"type":"string","description":"For run. Defaults to the workspace."},"profile":{"type":"string","enum":["clean","user"],"description":"For run: clean skips the user's startup files."},"tty":{"type":"boolean","description":"For run: allocate a pseudoterminal."},"yield_time_ms":{"type":"integer"},"timeout_ms":{"type":"integer"},"session_id":{"type":"string"},"chars":{"type":"string"},"force":{"type":"boolean"}},"required":["action"],"additionalProperties":false}`)
 }
 
 type liveProc struct {
@@ -61,6 +61,7 @@ func (t shellTool) Run(ctx context.Context, args json.RawMessage) (string, error
 		Session string `json:"session_id"`
 		Chars   string `json:"chars"`
 		Force   bool   `json:"force"`
+		TTY     bool   `json:"tty"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
 		return "", err
@@ -70,7 +71,7 @@ func (t shellTool) Run(ctx context.Context, args json.RawMessage) (string, error
 	}
 	switch in.Action {
 	case "run":
-		return t.run(ctx, in.Command, in.Cwd, in.Profile, in.YieldMS, in.Timeout)
+		return t.run(ctx, in.Command, in.Cwd, in.Profile, in.YieldMS, in.Timeout, in.TTY)
 	case "interact":
 		return interact(ctx, in.Session, in.Chars, in.YieldMS)
 	case "stop":
@@ -80,7 +81,7 @@ func (t shellTool) Run(ctx context.Context, args json.RawMessage) (string, error
 	}
 }
 
-func (t shellTool) run(ctx context.Context, command, cwd, profile string, yieldMS, timeoutMS int) (string, error) {
+func (t shellTool) run(ctx context.Context, command, cwd, profile string, yieldMS, timeoutMS int, tty bool) (string, error) {
 	if strings.TrimSpace(command) == "" {
 		return "", fmt.Errorf("shell command is empty")
 	}
@@ -120,21 +121,49 @@ func (t shellTool) run(ctx context.Context, command, cwd, profile string, yieldM
 	cmd := exec.Command(shell, args...)
 	cmd.Dir = cwd
 	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return "", err
-	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return "", err
+	var ptyMaster *os.File
+	var stdout io.ReadCloser
+	var stderr io.ReadCloser
+	var stdin io.WriteCloser
+	var err error
+	if tty {
+		master, slave, ptyErr := openPTY()
+		if ptyErr != nil {
+			return "", ptyErr
+		}
+		ptyMaster = master
+		cmd.Stdin = slave
+		cmd.Stdout = slave
+		cmd.Stderr = slave
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
+		stdout = master
+		stderr = io.NopCloser(strings.NewReader(""))
+		stdin = master
+		ptyMaster = slave
+	} else {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		stdout, err = cmd.StdoutPipe()
+		if err != nil {
+			return "", err
+		}
+		stderr, err = cmd.StderrPipe()
+		if err != nil {
+			return "", err
+		}
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			return "", err
+		}
 	}
 	if err := cmd.Start(); err != nil {
+		stdin.Close()
+		if ptyMaster != nil {
+			ptyMaster.Close()
+		}
 		return "", err
+	}
+	if ptyMaster != nil {
+		ptyMaster.Close()
 	}
 	lp := &liveProc{cmd: cmd, done: make(chan struct{}), stdin: stdin}
 	go func() {
