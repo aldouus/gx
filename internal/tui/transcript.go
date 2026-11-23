@@ -348,6 +348,7 @@ func (t *Transcript) User(text string) error {
 	if len(lines) == 0 {
 		lines = []string{rail + "┃" + reset}
 	}
+	lines = append(lines, "")
 	t.archive = append(t.archive, text)
 	return t.screen.Commit(lines)
 }
@@ -529,9 +530,9 @@ func (t *Transcript) frame() Frame {
 	if t.ask != nil {
 		return t.permissionFrame(rows)
 	}
-	rows = append(rows, "")
+	rows = append(rows, "", "")
 	if t.busy {
-		rows = append(rows, dim+"\u23fa Working"+reset)
+		rows = append(rows, bold+"\u25cf Working"+reset, "")
 	}
 	if t.menu != nil {
 		return t.menuFrame(rows)
@@ -540,7 +541,7 @@ func (t *Transcript) frame() Frame {
 	rows = append(rows, t.inputRow())
 	rows = append(rows, t.completionRows()...)
 	if len(t.comps) == 0 {
-		rows = append(rows, t.hintRow())
+		rows = append(rows, t.hintRow(), "")
 	}
 	col := width.String(composerMark) + width.String(t.input[:t.cursor]) + 1
 	if col < 1 {
@@ -691,10 +692,12 @@ func (t *Transcript) hintRow() string {
 	if !t.hasKey {
 		left = append(left, "run /login")
 	}
+	mode := t.mode
+	if mode == "" {
+		mode = "auto"
+	}
 	if !t.hideSession {
-		if t.mode != "" {
-			left = append(left, t.mode)
-		}
+		left = append(left, mode)
 		if t.model != "" {
 			left = append(left, t.model)
 		}
