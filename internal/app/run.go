@@ -100,14 +100,7 @@ func Run(args []string, in io.Reader, out, errOut io.Writer) int {
 	case "config":
 		return configCommand(out, errOut, home, settings, inv.Args)
 	case "mcp":
-		if len(settings.MCPServers) == 0 {
-			fmt.Fprintln(out, "no mcp servers")
-			return 0
-		}
-		for _, s := range settings.MCPServers {
-			fmt.Fprintf(out, "%s\t%s\n", s.Name, firstNonEmpty(s.URL, s.Command))
-		}
-		return 0
+		return mcpCommand(out, errOut, home, &settings, inv.Args)
 	case "login":
 		name := "codex"
 		if len(inv.Args) > 0 {
@@ -233,6 +226,14 @@ func printPermissions(out io.Writer, settings config.File, override string) int 
 	return 0
 }
 
+func sessionTitle(home, id string) string {
+	b, err := os.ReadFile(filepath.Join(home, "sessions", id, "title"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
 func listSessions(out, errOut io.Writer, home string) int {
 	ids, err := session.List(home)
 	if err != nil {
@@ -244,7 +245,12 @@ func listSessions(out, errOut io.Writer, home string) int {
 		return 0
 	}
 	for _, id := range ids {
-		fmt.Fprintln(out, id)
+		title := sessionTitle(home, id)
+		if title == "" {
+			fmt.Fprintln(out, id)
+			continue
+		}
+		fmt.Fprintf(out, "%s\t%s\n", id, title)
 	}
 	return 0
 }
@@ -429,16 +435,32 @@ func (s *subagents) Send(ctx context.Context, call tool.AgentCall) (string, erro
 		child = s.persist[name]
 		s.mu.Unlock()
 	}
+	if child == nil && persistent {
+		if id := rememberedSubagent(s.home, name); id != "" {
+			child, err = session.Open(s.home, id)
+			if err != nil {
+				child = nil
+			}
+		}
+	}
 	if child == nil {
 		child, err = session.Create(s.home, s.cwd)
 		if err != nil {
 			return "", err
 		}
 		if persistent {
+			_ = rememberSubagent(s.home, name, child.ID())
 			s.mu.Lock()
 			s.persist[name] = child
 			s.mu.Unlock()
 		}
+	} else if persistent {
+		s.mu.Lock()
+		if s.persist == nil {
+			s.persist = map[string]*session.Session{}
+		}
+		s.persist[name] = child
+		s.mu.Unlock()
 	}
 	childCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	s.inbox.Start(name, cancel)
@@ -516,7 +538,28 @@ func (s *subagents) Close(name string) string {
 		delete(s.persist, name)
 	}
 	s.mu.Unlock()
+	_ = os.Remove(subagentIDPath(s.home, name))
 	return msg
+}
+
+func subagentIDPath(home, name string) string {
+	return filepath.Join(home, "subagents", name)
+}
+
+func rememberSubagent(home, name, id string) error {
+	dir := filepath.Join(home, "subagents")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(subagentIDPath(home, name), []byte(id+"\n"), 0o600)
+}
+
+func rememberedSubagent(home, name string) string {
+	b, err := os.ReadFile(subagentIDPath(home, name))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 func execute(ctx context.Context, inv cli.Invocation, settings config.File, home, cwd, prompt string, errOut io.Writer, remember bool, approve agent.Approval, on func(agent.Event), inbox *agent.Mailbox, grants *agent.Grants) (string, error) {
@@ -807,7 +850,7 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 		case "rename":
 			return tr.User(renameSession(home, rest))
 		case "workspace":
-			return tr.User(workspaceSlash(cwd, settings, rest))
+			return tr.User(workspaceSlash(home, cwd, settings, rest))
 		case "copy":
 			return tr.User(copyLast(tr))
 		case "undo":
@@ -908,6 +951,11 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 	}, inbox, grants)
 	if err == nil && continued != nil {
 		*continued = true
+	}
+	if err != nil {
+		tr.SetResult("error")
+	} else {
+		tr.SetResult("done")
 	}
 	return err
 }
@@ -1063,7 +1111,7 @@ func renameSession(home, title string) string {
 	return "renamed " + title
 }
 
-func workspaceSlash(cwd string, settings *config.File, rest string) string {
+func workspaceSlash(home, cwd string, settings *config.File, rest string) string {
 	fields := strings.Fields(rest)
 	if settings == nil {
 		settings = &config.File{}
@@ -1083,6 +1131,9 @@ func workspaceSlash(cwd string, settings *config.File, rest string) string {
 			return "usage: /workspace add PATH"
 		}
 		settings.ExtraDirs = append(settings.ExtraDirs, fields[1])
+		if err := config.Save(home, *settings); err != nil {
+			return err.Error()
+		}
 		return "added " + fields[1]
 	case "remove":
 		if len(fields) != 2 {
@@ -1095,9 +1146,15 @@ func workspaceSlash(cwd string, settings *config.File, rest string) string {
 			}
 		}
 		settings.ExtraDirs = next
+		if err := config.Save(home, *settings); err != nil {
+			return err.Error()
+		}
 		return "removed " + fields[1]
 	case "clear":
 		settings.ExtraDirs = nil
+		if err := config.Save(home, *settings); err != nil {
+			return err.Error()
+		}
 		return "cleared workspace directories"
 	default:
 		return "usage: /workspace [list|add PATH|remove PATH|clear]"
@@ -1189,6 +1246,90 @@ func skillList(cwd, home string) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+func mcpCommand(out, errOut io.Writer, home string, settings *config.File, args []string) int {
+	text := mcpSlash(home, settings, strings.Join(args, " "))
+	if strings.HasPrefix(text, "usage:") || strings.HasPrefix(text, "no mcp server") {
+		fmt.Fprintln(errOut, text)
+		return 1
+	}
+	fmt.Fprintln(out, text)
+	return 0
+}
+
+func mcpLogin(home string, settings *config.File, args []string) string {
+	if len(args) != 2 {
+		return "usage: /mcp login NAME TOKEN"
+	}
+	srv, ok := findMCP(settings.MCPServers, args[0])
+	if !ok {
+		return "no mcp server " + args[0]
+	}
+	srv.Token = args[1]
+	settings.MCPServers = upsertMCP(settings.MCPServers, srv)
+	if err := config.Save(home, *settings); err != nil {
+		return err.Error()
+	}
+	return "signed in to " + args[0]
+}
+
+func mcpLogout(home string, settings *config.File, args []string) string {
+	if len(args) != 1 {
+		return "usage: /mcp logout NAME"
+	}
+	srv, ok := findMCP(settings.MCPServers, args[0])
+	if !ok {
+		return "no mcp server " + args[0]
+	}
+	srv.Token = ""
+	settings.MCPServers = upsertMCP(settings.MCPServers, srv)
+	if err := config.Save(home, *settings); err != nil {
+		return err.Error()
+	}
+	return "signed out of " + args[0]
+}
+
+func mcpApprove(home string, settings *config.File, args []string, approve bool) string {
+	if len(args) == 1 && args[0] == "--all" && approve {
+		for i := range settings.MCPServers {
+			settings.MCPServers[i].Approved = true
+			settings.MCPServers[i].Rejected = false
+		}
+		if err := config.Save(home, *settings); err != nil {
+			return err.Error()
+		}
+		return "approved all mcp servers"
+	}
+	if len(args) != 1 {
+		if approve {
+			return "usage: /mcp approve NAME"
+		}
+		return "usage: /mcp reject NAME"
+	}
+	srv, ok := findMCP(settings.MCPServers, args[0])
+	if !ok {
+		return "no mcp server " + args[0]
+	}
+	srv.Approved = approve
+	srv.Rejected = !approve
+	settings.MCPServers = upsertMCP(settings.MCPServers, srv)
+	if err := config.Save(home, *settings); err != nil {
+		return err.Error()
+	}
+	if approve {
+		return "approved " + args[0]
+	}
+	return "rejected " + args[0]
+}
+
+func findMCP(list []config.MCPServer, name string) (config.MCPServer, bool) {
+	for _, s := range list {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return config.MCPServer{}, false
+}
+
 func mcpSlash(home string, settings *config.File, rest string) string {
 	if settings == nil {
 		settings = &config.File{}
@@ -1226,8 +1367,16 @@ func mcpSlash(home string, settings *config.File, rest string) string {
 			return err.Error()
 		}
 		return "removed " + fields[1]
+	case "login":
+		return mcpLogin(home, settings, fields[1:])
+	case "logout":
+		return mcpLogout(home, settings, fields[1:])
+	case "approve":
+		return mcpApprove(home, settings, fields[1:], true)
+	case "reject":
+		return mcpApprove(home, settings, fields[1:], false)
 	default:
-		return "usage: /mcp [list|show|add|remove]"
+		return "usage: /mcp [list|show|add|remove|login|logout|approve|reject]"
 	}
 }
 
@@ -1246,6 +1395,17 @@ func mcpShow(settings config.File, name string) string {
 		}
 		if len(s.Args) > 0 {
 			fmt.Fprintf(&b, "args  %s\n", strings.Join(s.Args, " "))
+		}
+		if s.Token != "" {
+			b.WriteString("login  signed in\n")
+		}
+		switch {
+		case s.Rejected:
+			b.WriteString("approval  rejected\n")
+		case s.Approved:
+			b.WriteString("approval  approved\n")
+		default:
+			b.WriteString("approval  pending\n")
 		}
 		return strings.TrimRight(b.String(), "\n")
 	}

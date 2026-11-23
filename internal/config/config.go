@@ -19,7 +19,7 @@ type Settings struct {
 	Profile        string   `json:"profile,omitempty"`
 	ServiceTier    string   `json:"service_tier,omitempty"`
 	Effort         string   `json:"effort,omitempty"`
-	ExtraDirs      []string `json:"-"`
+	ExtraDirs      []string `json:"extra_dirs,omitempty"`
 }
 
 // Profile is an agent profile: tools, model, prompt, and permission mode.
@@ -33,11 +33,14 @@ type Profile struct {
 
 // MCPServer is one configured MCP server.
 type MCPServer struct {
-	Name    string   `json:"name"`
-	Command string   `json:"command,omitempty"`
-	Args    []string `json:"args,omitempty"`
-	URL     string   `json:"url,omitempty"`
-	Env     []string `json:"env,omitempty"`
+	Name     string   `json:"name"`
+	Command  string   `json:"command,omitempty"`
+	Args     []string `json:"args,omitempty"`
+	URL      string   `json:"url,omitempty"`
+	Env      []string `json:"env,omitempty"`
+	Token    string   `json:"token,omitempty"`
+	Approved bool     `json:"approved,omitempty"`
+	Rejected bool     `json:"rejected,omitempty"`
 }
 
 // File is settings plus the lists that live beside them.

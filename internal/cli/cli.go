@@ -287,7 +287,7 @@ var SlashCommands = []Slash{
 	{"statusline", "Toggle footer segments"},
 	{"launch", "Start another fx instance"},
 	{"close", "Close this fx instance"},
-	{"mcp", "List, show, add, or remove MCP servers"},
+	{"mcp", "List, show, add, remove, log in, or approve MCP servers"},
 	{"agents", "List subagents"},
 	{"status", "Show the model, permission mode, and workspace"},
 	{"shell", "Reload shell startup files"},

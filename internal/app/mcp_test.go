@@ -96,6 +96,48 @@ func TestMCPDialsOnFirstCall(t *testing.T) {
 	}
 }
 
+func TestMCPLoginApproveReject(t *testing.T) {
+	home := t.TempDir()
+	var buf bytes.Buffer
+	tr := tui.NewTranscript(&buf, 80)
+	settings := config.File{MCPServers: []config.MCPServer{{Name: "docs", URL: "https://example.test/mcp"}}}
+	if err := config.Save(home, settings); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handleSubmit(cli.Invocation{}, &loaded, home, t.TempDir(), tr, &buf, "/mcp login docs secret", nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleSubmit(cli.Invocation{}, &loaded, home, t.TempDir(), tr, &buf, "/mcp approve docs", nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.MCPServers[0].Token != "secret" || !saved.MCPServers[0].Approved {
+		t.Fatalf("%+v", saved.MCPServers[0])
+	}
+	if err := handleSubmit(cli.Invocation{}, &loaded, home, t.TempDir(), tr, &buf, "/mcp reject docs", nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	saved, err = config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !saved.MCPServers[0].Rejected || saved.MCPServers[0].Approved {
+		t.Fatalf("%+v", saved.MCPServers[0])
+	}
+	reg := tool.NewRegistry()
+	attachMCP(context.Background(), reg, saved.MCPServers, io.Discard)
+	if _, ok := reg.Get("mcp_docs"); ok {
+		t.Fatal("rejected server was registered")
+	}
+}
+
 func TestMCPSlashAddShowRemove(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("GX_HOME", home)

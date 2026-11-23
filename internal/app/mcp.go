@@ -34,8 +34,11 @@ type mcpSlot struct {
 func attachMCP(_ context.Context, reg *tool.Registry, servers []config.MCPServer, _ io.Writer) *mcpPool {
 	p := &mcpPool{slots: map[string]*mcpSlot{}, reg: reg}
 	for _, srv := range servers {
-		if srv.Name == "" {
+		if srv.Name == "" || srv.Rejected {
 			continue
+		}
+		if srv.Token != "" {
+			srv.Env = append(append([]string{}, srv.Env...), "MCP_TOKEN="+srv.Token)
 		}
 		reg.Add(lazyMCP{pool: p, server: srv})
 	}
