@@ -3,14 +3,17 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -382,41 +385,108 @@ type subagents struct {
 	home, cwd string
 	inbox     *agent.Mailbox
 	parent    *agent.Runner
+	emit      func(agent.Event)
 	n         atomic.Int64
+	mu        sync.Mutex
+	persist   map[string]*session.Session
 }
 
 func (s *subagents) Message(ctx context.Context, message string, depth int) (string, error) {
-	name := fmt.Sprintf("child-%d", s.n.Add(1))
-	child, err := session.Create(s.home, s.cwd)
-	if err != nil {
-		return "", err
+	return s.Send(ctx, tool.AgentCall{Message: message, Depth: depth})
+}
+
+func (s *subagents) Send(ctx context.Context, call tool.AgentCall) (string, error) {
+	if call.To == "parent" {
+		if s.parent != nil && s.parent.Session != nil {
+			_ = s.parent.Session.Steer("subagent parent:\n" + call.Message)
+		}
+		if s.inbox != nil {
+			s.inbox.Finish("parent", call.Message)
+		}
+		return "sent to parent", nil
+	}
+	name := call.Agent
+	persistent := name != ""
+	if name == "" {
+		name = fmt.Sprintf("child-%d", s.n.Add(1))
+	}
+	var child *session.Session
+	var err error
+	if persistent {
+		s.mu.Lock()
+		if s.persist == nil {
+			s.persist = map[string]*session.Session{}
+		}
+		child = s.persist[name]
+		s.mu.Unlock()
+	}
+	if child == nil {
+		child, err = session.Create(s.home, s.cwd)
+		if err != nil {
+			return "", err
+		}
+		if persistent {
+			s.mu.Lock()
+			s.persist[name] = child
+			s.mu.Unlock()
+		}
 	}
 	childCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	s.inbox.Start(name, cancel)
 	childRunner := *s.parent
 	childRunner.Session = child
-	childRunner.Depth = depth + 1
+	childRunner.Depth = call.Depth + 1
 	childRunner.Inbox = s.inbox
+	if call.Model != "" {
+		childRunner.Model = call.Model
+	}
+	if call.Profile != "" {
+		if p, err := config.LoadProfile(s.home, s.cwd, call.Profile); err == nil {
+			if p.Prompt != "" {
+				childRunner.Extra = p.Prompt + "\n\n" + childRunner.Extra
+			}
+			if p.Model != "" && call.Model == "" {
+				childRunner.Model = p.Model
+			}
+		}
+	}
 	mgr := subagent.Manager{Run: func(ctx context.Context, req subagent.Request, emit func(string)) (string, error) {
-		defer child.Close()
-		return childRunner.Turn(ctx, req.Message, nil)
+		if !persistent {
+			defer child.Close()
+		}
+		return childRunner.Turn(ctx, req.Message, func(ev agent.Event) {
+			if emit != nil && ev.Text != "" {
+				emit(ev.Text)
+			}
+		})
 	}}
-	ch, err := mgr.Start(childCtx, subagent.Request{Name: name, Message: message, Depth: depth, Report: "final"})
+	ch, err := mgr.Start(childCtx, subagent.Request{Name: name, Message: call.Message, Depth: call.Depth, Report: "every_turn"})
 	if err != nil {
 		cancel()
-		_ = child.Close()
+		if !persistent {
+			_ = child.Close()
+		}
 		s.inbox.Finish(name, err.Error())
 		return "", err
 	}
 	go func() {
-		rep, ok := <-ch
-		if !ok {
-			s.inbox.Finish(name, "closed")
-			return
+		var text string
+		for rep := range ch {
+			if rep.Text != "" {
+				text = rep.Text
+				if s.emit != nil {
+					s.emit(agent.Event{Kind: "text", Name: name, Text: rep.Text})
+				}
+			}
+			if rep.Err != nil && text == "" {
+				text = rep.Err.Error()
+			}
+			if rep.Final {
+				break
+			}
 		}
-		text := rep.Text
-		if rep.Err != nil && text == "" {
-			text = rep.Err.Error()
+		if text == "" {
+			text = "closed"
 		}
 		s.inbox.Finish(name, text)
 	}()
@@ -429,7 +499,16 @@ func (s *subagents) Wait(ctx context.Context, name string) (string, error) {
 
 func (s *subagents) Status(name string) string { return s.inbox.Status(name) }
 func (s *subagents) Stop(name string) string   { return s.inbox.Stop(name) }
-func (s *subagents) Close(name string) string  { return s.inbox.Close(name) }
+func (s *subagents) Close(name string) string {
+	msg := s.inbox.Close(name)
+	s.mu.Lock()
+	if child := s.persist[name]; child != nil {
+		_ = child.Close()
+		delete(s.persist, name)
+	}
+	s.mu.Unlock()
+	return msg
+}
 
 func execute(ctx context.Context, inv cli.Invocation, settings config.File, home, cwd, prompt string, errOut io.Writer, remember bool, approve agent.Approval, on func(agent.Event), inbox *agent.Mailbox, grants *agent.Grants) (string, error) {
 	model, origin, err := resolveModel(inv, settings)
@@ -451,6 +530,7 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 	}
 	roots := []string{cwd}
 	roots = append(roots, inv.AddDirs...)
+	roots = append(roots, settings.ExtraDirs...)
 	prov, model, err := pickProvider(inv, settings, home, model, origin)
 	if err != nil {
 		return "", err
@@ -492,12 +572,11 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 	}
 	extra, _ := config.ProjectInstructions(home, cwd, cwd)
 	if found, err := skills.Discover(cwd, home); err == nil && len(found) > 0 {
-		var b strings.Builder
-		b.WriteString("Skills available. Load a skill before following it.\n")
-		for _, sk := range found {
-			fmt.Fprintf(&b, "- %s: %s\n", sk.Name, sk.Description)
-		}
-		extra = b.String() + "\n" + extra
+		extra = skills.Catalog(found) + "\n" + extra
+	}
+	project, _ := config.LoadProject(cwd)
+	if project.Context != "" {
+		extra = project.Context + "\n\n" + extra
 	}
 	if inv.System != "" {
 		extra = inv.System + "\n\n" + extra
@@ -545,9 +624,10 @@ func execute(ctx context.Context, inv cli.Invocation, settings config.File, home
 		},
 		Grants:    grants,
 		Home:      home,
+		MaxRounds: project.MaxAgentSteps,
 		Workspace: cwd,
 	}
-	reg.Add(tool.Subagent(&subagents{home: home, cwd: cwd, inbox: inbox, parent: r}))
+	reg.Add(tool.Subagent(&subagents{home: home, cwd: cwd, inbox: inbox, parent: r, emit: on}))
 	sessions := attachMCP(ctx, reg, settings.MCPServers, errOut)
 	defer closeMCP(sessions)
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -714,7 +794,25 @@ func handleSubmit(inv cli.Invocation, settings *config.File, home, cwd string, t
 		case "images":
 			return listImages(rest, images, tr)
 		case "skills":
-			return tr.User(skillList(cwd, home))
+			return tr.User(skillsSlash(cwd, home, rest))
+		case "rename":
+			return tr.User(renameSession(home, rest))
+		case "workspace":
+			return tr.User(workspaceSlash(cwd, settings, rest))
+		case "copy":
+			return tr.User(copyLast(tr))
+		case "undo":
+			return tr.User(undoLast())
+		case "effort":
+			return tr.User(effortSlash(settings, tr, rest))
+		case "settings":
+			return tr.User(settingsSlash(settings))
+		case "statusline":
+			return tr.User(tr.ToggleStatus(rest))
+		case "launch":
+			return tr.User(launchInstance(rest))
+		case "close":
+			return errQuit
 		case "mcp":
 			return tr.User(mcpSlash(home, settings, rest))
 		case "agents":
@@ -890,6 +988,183 @@ func subscriptionProvider(home, name, model, origin string) (provider.Provider, 
 	return provider.Responses{Kind: name, APIKey: token, AccountID: cred.AccountID}, model, nil
 }
 
+func skillsSlash(cwd, home, rest string) string {
+	fields := strings.Fields(rest)
+	if len(fields) == 0 || fields[0] == "list" {
+		return skillList(cwd, home)
+	}
+	found, err := skills.Discover(cwd, home)
+	if err != nil {
+		return err.Error()
+	}
+	switch fields[0] {
+	case "show":
+		if len(fields) != 2 {
+			return "usage: /skills show NAME"
+		}
+		text, err := skills.Show(found, fields[1])
+		if err != nil {
+			return err.Error()
+		}
+		return text
+	case "create":
+		if len(fields) < 2 {
+			return "usage: /skills create NAME"
+		}
+		path, err := skills.Create(filepath.Join(home, "skills"), fields[1], strings.Join(fields[2:], " "))
+		if err != nil {
+			return err.Error()
+		}
+		return "created " + path
+	case "add", "install":
+		if len(fields) != 2 {
+			return "usage: /skills install PATH"
+		}
+		dst, err := skills.Install(fields[1], filepath.Join(home, "skills"))
+		if err != nil {
+			return err.Error()
+		}
+		return "installed " + dst
+	case "remove":
+		if len(fields) != 2 {
+			return "usage: /skills remove NAME"
+		}
+		if err := skills.Remove(filepath.Join(home, "skills"), fields[1]); err != nil {
+			return err.Error()
+		}
+		return "removed " + fields[1]
+	default:
+		return "usage: /skills [list|show|add|install|create|remove]"
+	}
+}
+
+func renameSession(home, title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return "usage: /rename TITLE"
+	}
+	id, err := session.Remembered(home)
+	if err != nil || id == "" {
+		return "no session to rename"
+	}
+	path := filepath.Join(home, "sessions", id, "title")
+	if err := os.WriteFile(path, []byte(title+"\n"), 0o600); err != nil {
+		return err.Error()
+	}
+	return "renamed " + title
+}
+
+func workspaceSlash(cwd string, settings *config.File, rest string) string {
+	fields := strings.Fields(rest)
+	if settings == nil {
+		settings = &config.File{}
+	}
+	if len(fields) == 0 || fields[0] == "list" {
+		var b strings.Builder
+		b.WriteString(cwd)
+		for _, dir := range settings.ExtraDirs {
+			b.WriteByte('\n')
+			b.WriteString(dir)
+		}
+		return b.String()
+	}
+	switch fields[0] {
+	case "add":
+		if len(fields) != 2 {
+			return "usage: /workspace add PATH"
+		}
+		settings.ExtraDirs = append(settings.ExtraDirs, fields[1])
+		return "added " + fields[1]
+	case "remove":
+		if len(fields) != 2 {
+			return "usage: /workspace remove PATH"
+		}
+		var next []string
+		for _, dir := range settings.ExtraDirs {
+			if dir != fields[1] {
+				next = append(next, dir)
+			}
+		}
+		settings.ExtraDirs = next
+		return "removed " + fields[1]
+	case "clear":
+		settings.ExtraDirs = nil
+		return "cleared workspace directories"
+	default:
+		return "usage: /workspace [list|add PATH|remove PATH|clear]"
+	}
+}
+
+func copyLast(tr *tui.Transcript) string {
+	text := ""
+	if tr != nil {
+		text = tr.LastAssistant()
+	}
+	if text == "" {
+		return "nothing to copy"
+	}
+	return "\x1b]52;c;" + b64(text) + "\x1b\\copied"
+}
+
+func b64(s string) string {
+	return base64.StdEncoding.EncodeToString([]byte(s))
+}
+
+func undoLast() string {
+	text, err := tool.Undo()
+	if err != nil {
+		return "nothing to undo"
+	}
+	return text
+}
+
+func effortSlash(settings *config.File, tr *tui.Transcript, rest string) string {
+	level := strings.TrimSpace(rest)
+	if level == "" {
+		if settings != nil && settings.Effort != "" {
+			return "effort " + settings.Effort
+		}
+		return "effort medium"
+	}
+	switch level {
+	case "low", "medium", "high", "xhigh", "max":
+	default:
+		return "effort is low, medium, high, xhigh, or max"
+	}
+	if settings != nil {
+		settings.Effort = level
+		if level == "high" || level == "xhigh" || level == "max" {
+			settings.ServiceTier = "priority"
+		}
+	}
+	if tr != nil {
+		tr.SetPlace("", level)
+	}
+	return "effort " + level
+}
+
+func settingsSlash(settings *config.File) string {
+	if settings == nil {
+		return "{}"
+	}
+	b, _ := json.MarshalIndent(settings, "", "  ")
+	return string(b)
+}
+
+func launchInstance(profile string) string {
+	args := []string{}
+	if strings.TrimSpace(profile) != "" {
+		args = append(args, "--profile", profile)
+	}
+	cmd := exec.Command(os.Args[0], args...)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		return err.Error()
+	}
+	return fmt.Sprintf("launched %d", cmd.Process.Pid)
+}
+
 func skillList(cwd, home string) string {
 	found, err := skills.Discover(cwd, home)
 	if err != nil {
@@ -900,7 +1175,7 @@ func skillList(cwd, home string) string {
 	}
 	var b strings.Builder
 	for _, sk := range found {
-		fmt.Fprintf(&b, "%s  %s\n", sk.Name, sk.Description)
+		fmt.Fprintf(&b, "%s  %s  %s\n", sk.Name, sk.Description, sk.Location)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

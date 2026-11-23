@@ -40,14 +40,18 @@ type Transcript struct {
 	input  string
 	cursor int
 
-	live      string
-	archive   []string
-	tools     []ToolLine
-	ask       *ToolLine
-	askChoice int
-	askNote   string
-	askAmend  bool
-	statusSeq string
+	live          string
+	archive       []string
+	tools         []ToolLine
+	ask           *ToolLine
+	askChoice     int
+	askNote       string
+	askAmend      bool
+	statusSeq     string
+	lastAssistant string
+	hideContext   bool
+	hideSession   bool
+	hideWorkspace bool
 }
 
 func NewTranscript(out interface{ Write([]byte) (int, error) }, cols int) *Transcript {
@@ -61,6 +65,44 @@ func (t *Transcript) SetStatus(model, mode string, hasKey bool) {
 	t.model = model
 	t.mode = mode
 	t.hasKey = hasKey
+}
+
+// LastAssistant is the last finished assistant text, for /copy.
+func (t *Transcript) LastAssistant() string {
+	if t == nil {
+		return ""
+	}
+	return t.lastAssistant
+}
+
+// ToggleStatus flips a footer segment: context, session, or workspace.
+func (t *Transcript) ToggleStatus(part string) string {
+	if t == nil {
+		return "no transcript"
+	}
+	switch strings.TrimSpace(part) {
+	case "", "status":
+		return t.statusSummary()
+	case "context":
+		t.hideContext = !t.hideContext
+	case "session":
+		t.hideSession = !t.hideSession
+	case "workspace":
+		t.hideWorkspace = !t.hideWorkspace
+	default:
+		return "usage: /statusline [context|session|workspace]"
+	}
+	return t.statusSummary()
+}
+
+func (t *Transcript) statusSummary() string {
+	on := func(hidden bool) string {
+		if hidden {
+			return "off"
+		}
+		return "on"
+	}
+	return "context " + on(t.hideContext) + "\nsession " + on(t.hideSession) + "\nworkspace " + on(t.hideWorkspace)
 }
 
 // SetPlace records the workspace and effort shown in the footer.
@@ -180,6 +222,7 @@ func (t *Transcript) FinishText() error {
 	}
 	if t.live != "" {
 		t.archive = append(t.archive, t.live)
+		t.lastAssistant = t.live
 	}
 	n := len(wrapPlain(t.live, t.cols))
 	t.live = ""
@@ -409,14 +452,18 @@ func (t *Transcript) hintRow() string {
 	if !t.hasKey {
 		left = append(left, "run /login")
 	}
-	if t.mode != "" {
-		left = append(left, t.mode)
+	if !t.hideSession {
+		if t.mode != "" {
+			left = append(left, t.mode)
+		}
+		if t.model != "" {
+			left = append(left, t.model)
+		}
 	}
-	if t.model != "" {
-		left = append(left, t.model)
+	if !t.hideContext {
+		left = append(left, t.contextLabel())
 	}
-	left = append(left, t.contextLabel())
-	if t.cwd != "" {
+	if t.cwd != "" && !t.hideWorkspace {
 		left = append(left, shortPath(t.cwd))
 	}
 	effort := t.effort

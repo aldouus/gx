@@ -47,6 +47,18 @@ type Agents interface {
 	Close(name string) string
 }
 
+// AgentCall is a subagent request with an optional persistent name, model,
+// profile, and a parent destination.
+type AgentCall struct {
+	Message, Agent, Model, Profile, To string
+	Depth                              int
+}
+
+// Sender starts or continues a subagent with AgentCall.
+type Sender interface {
+	Send(ctx context.Context, call AgentCall) (string, error)
+}
+
 type delegate struct{ agents Agents }
 
 // Subagent is the subagent tool. Nesting stops at depth two.
@@ -54,12 +66,12 @@ func Subagent(agents Agents) Tool { return delegate{agents: agents} }
 
 func (delegate) Name() string { return "subagent" }
 func (delegate) Description() string {
-	return "Start a subagent, wait for its report, or stop it. action is message, wait, status, stop, or close. message starts one and returns at once. wait blocks until a report. stop ends a running turn. close stops it and drops it."
+	return "Start a subagent, wait for its report, or stop it. action is message, wait, status, stop, or close. message starts one and returns at once. to=parent sends the message to the parent. A named agent is persistent. wait blocks until a report. stop ends a running turn. close stops it and drops it."
 }
 func (delegate) ReadOnly() bool      { return false }
 func (delegate) NeedsApproval() bool { return false }
 func (delegate) Schema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"action":{"type":"string","enum":["message","wait","status","stop","close"]},"message":{"type":"string"},"agent":{"type":"string"}},"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"action":{"type":"string","enum":["message","wait","status","stop","close"]},"message":{"type":"string"},"agent":{"type":"string"},"model":{"type":"string"},"profile":{"type":"string"},"to":{"type":"string"}},"additionalProperties":false}`)
 }
 
 func (d delegate) Run(ctx context.Context, args json.RawMessage) (string, error) {
@@ -67,6 +79,9 @@ func (d delegate) Run(ctx context.Context, args json.RawMessage) (string, error)
 		Action  string `json:"action"`
 		Message string `json:"message"`
 		Agent   string `json:"agent"`
+		Model   string `json:"model"`
+		Profile string `json:"profile"`
+		To      string `json:"to"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
 		return "", err
@@ -85,6 +100,16 @@ func (d delegate) Run(ctx context.Context, args json.RawMessage) (string, error)
 		depth := Depth(ctx)
 		if depth >= 2 {
 			return "", fmt.Errorf("nesting stops at two")
+		}
+		if sender, ok := d.agents.(Sender); ok {
+			return sender.Send(ctx, AgentCall{
+				Message: in.Message,
+				Agent:   in.Agent,
+				Model:   in.Model,
+				Profile: in.Profile,
+				To:      in.To,
+				Depth:   depth,
+			})
 		}
 		return d.agents.Message(ctx, in.Message, depth)
 	case "wait":
