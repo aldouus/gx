@@ -483,17 +483,15 @@ func (s *subagents) Send(ctx context.Context, call tool.AgentCall) (string, erro
 			}
 		}
 	}
-	mgr := subagent.Manager{Run: func(ctx context.Context, req subagent.Request, emit func(string)) (string, error) {
+	mgr := subagent.Manager{Run: func(ctx context.Context, req subagent.Request, _ func(string)) (string, error) {
 		if !persistent {
 			defer child.Close()
 		}
-		return childRunner.Turn(ctx, req.Message, func(ev agent.Event) {
-			if emit != nil && ev.Text != "" {
-				emit(ev.Text)
-			}
-		})
+		// The parent's tool row is the subagent's only surface. The child's
+		// assistant text stays in the report, behind the row.
+		return childRunner.Turn(ctx, req.Message, nil)
 	}}
-	ch, err := mgr.Start(childCtx, subagent.Request{Name: name, Message: call.Message, Depth: call.Depth, Report: "every_turn"})
+	ch, err := mgr.Start(childCtx, subagent.Request{Name: name, Message: call.Message, Depth: call.Depth, Report: "final"})
 	if err != nil {
 		cancel()
 		if !persistent {
@@ -505,11 +503,8 @@ func (s *subagents) Send(ctx context.Context, call tool.AgentCall) (string, erro
 	go func() {
 		var text string
 		for rep := range ch {
-			if rep.Text != "" {
+			if rep.Final && rep.Text != "" {
 				text = rep.Text
-				if s.emit != nil {
-					s.emit(agent.Event{Kind: "text", Name: name, Text: rep.Text})
-				}
 			}
 			if rep.Err != nil && text == "" {
 				text = rep.Err.Error()
@@ -734,7 +729,13 @@ func runInteractive(inv cli.Invocation, settings config.File, home, cwd string, 
 		fmt.Fprintln(errOut, err)
 		return 1
 	}
-	defer restore()
+	// Autowrap off, same as fx. A glyph may end on the last column without
+	// the terminal pending a wrap that stacks the next paint.
+	fmt.Fprint(os.Stdout, "\x1b[?7l")
+	defer func() {
+		fmt.Fprint(os.Stdout, "\x1b[?7h")
+		restore()
+	}()
 	_, cols := tui.WindowSize(tui.StdoutFD())
 	tr := tui.NewTranscript(os.Stdout, cols)
 	defer tr.End()

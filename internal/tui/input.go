@@ -84,15 +84,7 @@ func (c *Composer) Feed(b []byte) Action {
 			act.Redraw = true
 		case '\r', '\n':
 			b = b[1:]
-			c.Armed = false
-			c.Esc = false
-			act.Submit = c.Line
-			if c.Line != "" {
-				c.History = append(c.History, c.Line)
-			}
-			c.hist = len(c.History)
-			c.Line = ""
-			c.Pos = 0
+			act.Submit = c.takeLine()
 			act.Redraw = true
 			return act
 		case 127, 8:
@@ -149,8 +141,17 @@ func (c *Composer) Feed(b []byte) Action {
 				c.pending = append([]byte{}, b...)
 				return act
 			}
-			rest, a := c.escape(b)
+			rest, a, hold := c.escape(b)
+			if hold {
+				c.pending = append([]byte{}, b...)
+				return act
+			}
 			b = rest
+			if a.Submit != "" {
+				act.Submit = a.Submit
+				act.Redraw = true
+				return act
+			}
 			act.Interrupt = act.Interrupt || a.Interrupt
 			act.Up = act.Up || a.Up
 			act.Down = act.Down || a.Down
@@ -203,57 +204,218 @@ func (c *Composer) deleteForward() {
 	c.Line = c.Line[:c.Pos] + c.Line[c.Pos+size:]
 }
 
-func (c *Composer) escape(b []byte) ([]byte, Action) {
+func (c *Composer) takeLine() string {
+	c.Armed = false
+	c.Esc = false
+	line := c.Line
+	if line != "" {
+		c.History = append(c.History, line)
+	}
+	c.hist = len(c.History)
+	c.Line = ""
+	c.Pos = 0
+	return line
+}
+
+func (c *Composer) escape(b []byte) ([]byte, Action, bool) {
 	if len(b) == 1 {
 		if strings.HasPrefix(strings.TrimSpace(c.Line), "/") {
-			return nil, Action{Close: true}
+			return nil, Action{Close: true}, false
 		}
 		if c.Esc {
 			c.Esc = false
-			return nil, Action{Interrupt: true}
+			return nil, Action{Interrupt: true}, false
 		}
 		c.Esc = true
 		c.Armed = false
-		return nil, Action{}
+		return nil, Action{}, false
 	}
 	c.Esc = false
 	c.Armed = false
+	// Alt+Enter is ESC then CR. Shift and Alt insert a newline. Ctrl+Enter submits.
+	if b[1] == '\r' || b[1] == '\n' {
+		if !c.commandMode() {
+			c.insert('\n')
+		}
+		return b[2:], Action{}, false
+	}
+	if b[1] == '[' {
+		switch scanCSI(b) {
+		case csiPartial:
+			return nil, Action{}, true
+		case csiFinal:
+			if rest, kind := matchEnter(b); kind != enterMiss {
+				return c.applyEnter(rest, kind)
+			}
+		}
+	}
 	if len(b) >= 3 && (b[1] == '[' || b[1] == 'O') {
 		switch b[2] {
 		case 'A':
 			if strings.HasPrefix(strings.TrimSpace(c.Line), "/") {
-				return b[3:], Action{Up: true, Redraw: true}
+				return b[3:], Action{Up: true, Redraw: true}, false
 			}
 			c.history(-1)
-			return b[3:], Action{}
+			return b[3:], Action{}, false
 		case 'B':
 			if strings.HasPrefix(strings.TrimSpace(c.Line), "/") {
-				return b[3:], Action{Down: true, Redraw: true}
+				return b[3:], Action{Down: true, Redraw: true}, false
 			}
 			c.history(1)
-			return b[3:], Action{}
+			return b[3:], Action{}, false
 		case 'C':
 			c.move(1)
-			return b[3:], Action{}
+			return b[3:], Action{}, false
 		case 'D':
 			c.move(-1)
-			return b[3:], Action{}
+			return b[3:], Action{}, false
 		case 'H':
 			c.Pos = 0
-			return b[3:], Action{}
+			return b[3:], Action{}, false
 		case 'F':
 			c.Pos = len(c.Line)
-			return b[3:], Action{}
+			return b[3:], Action{}, false
 		}
 	}
 	if strings.HasPrefix(strings.TrimSpace(c.Line), "/") {
-		return b[1:], Action{Close: true}
+		return b[1:], Action{Close: true}, false
 	}
 	if c.Vim {
 		c.enterNormal()
-		return b[1:], Action{}
+		return b[1:], Action{}, false
 	}
-	return b[1:], Action{}
+	return b[1:], Action{}, false
+}
+
+func (c *Composer) applyEnter(rest []byte, kind int) ([]byte, Action, bool) {
+	switch kind {
+	case enterNewline:
+		if !c.commandMode() {
+			c.insert('\n')
+		}
+	case enterSubmit:
+		return rest, Action{Submit: c.takeLine()}, false
+	}
+	return rest, Action{}, false
+}
+
+const (
+	enterMiss = iota
+	enterNewline
+	enterSubmit
+	enterDrop
+
+	csiNo = iota
+	csiPartial
+	csiFinal
+)
+
+// scanCSI reports whether b is an unfinished CSI, a finished one, or not a CSI.
+// An unfinished sequence stays buffered so its bytes are not typed.
+func scanCSI(b []byte) int {
+	if len(b) < 2 || b[0] != 0x1b || b[1] != '[' {
+		return csiNo
+	}
+	i := 2
+	for i < len(b) && i < 48 {
+		ch := b[i]
+		if ch >= 0x40 && ch <= 0x7e {
+			return csiFinal
+		}
+		if ch >= 0x20 && ch <= 0x3f {
+			i++
+			continue
+		}
+		return csiNo
+	}
+	if i >= 48 {
+		return csiNo
+	}
+	return csiPartial
+}
+
+// matchEnter recognizes kitty CSI 13 ; mod u, keypad CSI 57414 ; mod u, and
+// modifyOtherKeys CSI 27 ; mod ; 13 ~. A key release is consumed. rest is nil
+// when b is not one of those reports.
+func matchEnter(b []byte) (rest []byte, kind int) {
+	end := 2
+	for end < len(b) && end < 48 {
+		ch := b[end]
+		if ch >= 0x40 && ch <= 0x7e {
+			break
+		}
+		end++
+	}
+	if end >= len(b) {
+		return nil, enterMiss
+	}
+	final := b[end]
+	if final != '~' && final != 'u' {
+		return nil, enterMiss
+	}
+	mod, release, ok := enterMod(string(b[2:end]), final)
+	if !ok {
+		return nil, enterMiss
+	}
+	if release {
+		return b[end+1:], enterDrop
+	}
+	// Shift or Alt inserts a newline, even with Ctrl. Ctrl alone submits.
+	if mod&1 != 0 || mod&2 != 0 {
+		return b[end+1:], enterNewline
+	}
+	if mod&4 != 0 || mod == 0 {
+		return b[end+1:], enterSubmit
+	}
+	return b[end+1:], enterDrop
+}
+
+func enterMod(params string, final byte) (mod int, release, ok bool) {
+	fields := strings.Split(params, ";")
+	var modField string
+	switch final {
+	case '~':
+		if len(fields) != 3 || fields[0] != "27" {
+			return 0, false, false
+		}
+		modField = fields[1]
+		if !enterKey(fields[2]) {
+			return 0, false, false
+		}
+	case 'u':
+		if len(fields) == 0 || !enterKey(fields[0]) {
+			return 0, false, false
+		}
+		modField = "1"
+		if len(fields) >= 2 {
+			modField = fields[1]
+		}
+	default:
+		return 0, false, false
+	}
+	n := 0
+	i := 0
+	for i < len(modField) && modField[i] >= '0' && modField[i] <= '9' {
+		n = n*10 + int(modField[i]-'0')
+		i++
+	}
+	if n > 0 {
+		mod = n - 1
+	}
+	if i < len(modField) && modField[i] == ':' {
+		i++
+		ev := 0
+		for i < len(modField) && modField[i] >= '0' && modField[i] <= '9' {
+			ev = ev*10 + int(modField[i]-'0')
+			i++
+		}
+		release = ev == 3
+	}
+	return mod, release, true
+}
+
+func enterKey(s string) bool {
+	return s == "13" || s == "10" || s == "57414"
 }
 
 func (c *Composer) bareEsc() Action {

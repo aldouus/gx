@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestTranscriptOrderAndDiff(t *testing.T) {
@@ -701,4 +702,263 @@ func strip(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
+}
+
+func TestToolRowsHidePayloads(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewTranscript(&buf, 80)
+	stdout := "<stdout>\nfailed to parse something\n11 ./cmd/gx/main.go\n</stdout>\nexit_code: 0\n"
+	if err := tr.ToolStart("shell", `{"command":"find . -name '*.go'"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.ToolDone("shell", stdout); err != nil {
+		t.Fatal(err)
+	}
+	detail := `{"action":"message","agent":"review-agent","message":"You are reviewing the tool layer"}`
+	if err := tr.ToolStart("subagent", detail); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.ToolDone("subagent", "subagent review-agent started"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.ToolStart("glob_files", `{"pattern":"**/*.{rs,toml,md}"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.ToolDone("glob_files", "cmd/gx/main.go"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.CommitTools(); err != nil {
+		t.Fatal(err)
+	}
+	plain := strip(buf.String())
+	for _, bad := range []string{"<stdout>", `"action"`, `"command"`, "failed to parse", "Failed "} {
+		if strings.Contains(plain, bad) {
+			t.Fatalf("row showed %q\n%s", bad, plain)
+		}
+	}
+	for _, want := range []string{"Ran find . -name '*.go'", "Messaged review-agent", "Searched **/*.{rs,toml,md}", "messaged a subagent"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("missing %q\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "You are reviewing the tool layer") {
+		t.Fatalf("subagent message was on the row\n%s", plain)
+	}
+	read := "<path>tui_test.go</path>\n<content>\nexit_code: 1\nerror_code: 7\n</content>\n"
+	if toolFailed(ToolLine{Name: "read_file", Detail: `{"path":"tui_test.go"}`, Output: read}) {
+		t.Fatal("file body with exit_code looked failed")
+	}
+	if toolFailed(ToolLine{Name: "read_file", Output: "error_code: 1"}) {
+		t.Fatal("error_code is not its own word")
+	}
+	if !toolFailed(ToolLine{Name: "read_file", Output: "error: missing"}) {
+		t.Fatal("a one-line error should fail")
+	}
+	failed := "<stdout>\nlisting\n</stdout>\n<stderr>\nls: missing: No such file or directory\n</stderr>\nexit_code: 1\n"
+	row := toolRow(ToolLine{Name: "shell", Detail: `{"command":"ls missing"}`, Output: failed})
+	if strings.Contains(row, "<stdout>") || strings.Contains(row, "<stderr>") || !strings.Contains(row, "Exited 1 ls missing") || !strings.Contains(row, "No such file") {
+		t.Fatal(row)
+	}
+}
+
+func TestComposerWrapsInsteadOfStacking(t *testing.T) {
+	var buf bytes.Buffer
+	const cols = 20
+	tr := NewTranscript(&buf, cols)
+	tr.SetVim(true, "insert", 0)
+	tr.SetStatus("m", "auto", true)
+	line := strings.Repeat("e", 40)
+	tr.SetInput(line, len(line))
+	rows, rel, col := tr.composerRows()
+	if len(rows) < 2 {
+		t.Fatalf("expected a wrap, got %d rows", len(rows))
+	}
+	for _, row := range rows {
+		if n := utf8.RuneCountInString(strip(row)); n > cols {
+			t.Fatalf("row width %d %q", n, strip(row))
+		}
+	}
+	if rel != len(rows)-1 || col < 1 || col > cols {
+		t.Fatalf("cursor row %d col %d rows %d", rel, col, len(rows))
+	}
+	room := cols - utf8.RuneCountInString(composerMark)
+	tr.SetInput(strings.Repeat("e", room), room)
+	rows, rel, col = tr.composerRows()
+	if len(rows) != 1 || rel != 0 || col != cols {
+		t.Fatalf("full row rows=%d rel=%d col=%d", len(rows), rel, col)
+	}
+	if err := tr.Paint(); err != nil {
+		t.Fatal(err)
+	}
+	before := buf.Len()
+	if err := tr.Paint(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String()[before:], "\n") {
+		t.Fatal("repainting a full row stacked a copy of the line")
+	}
+	tr.SetVim(false, "", 0)
+	tr.SetInput(strings.Repeat("w", room), room/2)
+	rows, _, _ = tr.composerRows()
+	if len(rows) != 1 {
+		t.Fatalf("caret split the word %#v", rows)
+	}
+	text := strings.Repeat("a", room-1) + " hello"
+	tr.SetVim(true, "insert", 0)
+	tr.SetInput(text, len(text))
+	rows, _, _ = tr.composerRows()
+	if len(rows) < 2 || !strings.HasPrefix(strings.TrimSpace(strip(rows[1])), "hello") {
+		t.Fatalf("word wrap %#v", rows)
+	}
+}
+
+func TestShiftEnterInsertsNewline(t *testing.T) {
+	var c Composer
+	c.Feed([]byte("hi"))
+	act := c.Feed([]byte("\x1b[27;2;13~"))
+	if act.Submit != "" || c.Line != "hi\n" || strings.Contains(c.Line, "[27") {
+		t.Fatalf("modifyOtherKeys line %q submit %q", c.Line, act.Submit)
+	}
+	c.Feed([]byte("there"))
+	if c.Line != "hi\nthere" {
+		t.Fatalf("after text %q", c.Line)
+	}
+	act = c.Feed([]byte("\r"))
+	if act.Submit != "hi\nthere" {
+		t.Fatalf("submit %q", act.Submit)
+	}
+
+	c = Composer{}
+	c.Feed([]byte("ab"))
+	c.Feed([]byte("\x1b[13;2u"))
+	if c.Line != "ab\n" {
+		t.Fatalf("kitty line %q", c.Line)
+	}
+	before := c.Line
+	c.Feed([]byte("\x1b[13;2:3u"))
+	if c.Line != before {
+		t.Fatalf("release typed %q", c.Line)
+	}
+
+	c = Composer{Vim: true, Mode: "normal", Line: "hi", Pos: 2}
+	c.Feed([]byte("\x1b[27;2;13~"))
+	if c.Line != "hi" || strings.Contains(c.Line, "[27") {
+		t.Fatalf("vim normal %q", c.Line)
+	}
+
+	c = Composer{}
+	c.Feed([]byte("hi"))
+	act = c.Feed([]byte("\x1b[13;5u"))
+	if act.Submit != "hi" || strings.Contains(c.Line, "[13") {
+		t.Fatalf("ctrl+enter submit %q line %q", act.Submit, c.Line)
+	}
+	c = Composer{}
+	c.Feed([]byte("hi"))
+	c.Feed([]byte{0x1b, '\r'})
+	if c.Line != "hi\n" {
+		t.Fatalf("alt+enter %q", c.Line)
+	}
+	c = Composer{}
+	c.Feed([]byte("ab"))
+	c.Feed([]byte("\x1b[57414;2u"))
+	if c.Line != "ab\n" {
+		t.Fatalf("keypad %q", c.Line)
+	}
+	c = Composer{}
+	c.Feed([]byte("hi"))
+	c.Feed([]byte{0x1b, '[', '2'})
+	if strings.Contains(c.Line, "[") || strings.Contains(c.Line, "2") {
+		t.Fatalf("partial sequence typed %q", c.Line)
+	}
+	c.Feed([]byte("7;2;13~"))
+	if c.Line != "hi\n" {
+		t.Fatalf("split shift+enter %q", c.Line)
+	}
+
+	var buf bytes.Buffer
+	tr := NewTranscript(&buf, 40)
+	tr.SetStatus("m", "auto", true)
+	tr.SetInput("hello\nworld", len("hello\n"))
+	rows, rel, _ := tr.composerRows()
+	if len(rows) < 2 || rel != 1 {
+		t.Fatalf("rows %d rel %d", len(rows), rel)
+	}
+	for _, row := range rows {
+		if strings.Contains(row, "\n") {
+			t.Fatalf("newline leaked into a frame row %q", row)
+		}
+	}
+	if !strings.Contains(strip(rows[0]), "hello") || !strings.Contains(strip(rows[1]), "world") {
+		t.Fatalf("rows %#v", rows)
+	}
+}
+
+func TestMarkdownTableRenders(t *testing.T) {
+	src := "About the tree.\n\n| Scope | Lines |\n|---|---:|\n| Production Go (`*.go`, excluding `*_test.go`) | 22,990 |\n| Tests | 5,019 |\n\nAfter the table."
+	rows := assistantRows(src, 80)
+	plain := strip(strings.Join(rows, "\n"))
+	if strings.Contains(plain, "|---|") || strings.Contains(plain, "| Scope") || strings.Contains(plain, "`*.go`") {
+		t.Fatalf("raw markdown left in table\n%s", plain)
+	}
+	if !strings.Contains(plain, "Scope") || !strings.Contains(plain, "22,990") || !strings.Contains(plain, "│") || !strings.Contains(plain, "┼") || !strings.Contains(plain, "After the table") {
+		t.Fatalf("missing rendered table\n%s", plain)
+	}
+	var numLines []string
+	for _, row := range rows {
+		if strings.Contains(strip(row), "22,990") || strings.Contains(strip(row), "5,019") {
+			numLines = append(numLines, strip(row))
+		}
+		if n := len([]rune(strip(row))); n >= 80 {
+			t.Fatalf("row wider than the screen %d %q", n, strip(row))
+		}
+	}
+	if len(numLines) != 2 {
+		t.Fatalf("number rows %#v", numLines)
+	}
+	end := func(row, num string) int { return strings.LastIndex(row, num) + len(num) }
+	if end(numLines[0], "22,990") != end(numLines[1], "5,019") {
+		t.Fatalf("numbers not right aligned\n%q\n%q", numLines[0], numLines[1])
+	}
+
+	prose := "Use a | b in a sentence.\nThen more.\n"
+	proseRows := assistantRows(prose, 80)
+	prosePlain := strip(strings.Join(proseRows, "\n"))
+	if strings.Contains(prosePlain, "│") || strings.Contains(prosePlain, "┼") || !strings.Contains(prosePlain, "a | b") || !strings.Contains(prosePlain, "Then more") {
+		t.Fatalf("prose pipe became a table\n%s", prosePlain)
+	}
+
+	var buf bytes.Buffer
+	tr := NewTranscript(&buf, 80)
+	tr.SetStatus("m", "auto", true)
+	for _, part := range []string{"Use a | b here.\n", "Then more.\n"} {
+		if err := tr.Token(part); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tr.FinishText(); err != nil {
+		t.Fatal(err)
+	}
+	got := strip(replay(buf.String()))
+	if strings.Contains(got, "│") || !strings.Contains(got, "a | b") || !strings.Contains(got, "Then more") {
+		t.Fatalf("stream held a prose pipe\n%s", got)
+	}
+
+	buf.Reset()
+	tr = NewTranscript(&buf, 80)
+	tr.SetStatus("m", "auto", true)
+	for _, part := range []string{"| Scope | Lines |\n", "|---|---|\n", "| Go | 10 |\n", "\nDone\n"} {
+		if err := tr.Token(part); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tr.FinishText(); err != nil {
+		t.Fatal(err)
+	}
+	got = strip(replay(buf.String()))
+	if strings.Contains(got, "|---|") || strings.Contains(got, "| Scope") {
+		t.Fatalf("stream left raw pipes\n%s", got)
+	}
+	if !strings.Contains(got, "Scope") || !strings.Contains(got, "Go") || !strings.Contains(got, "Done") {
+		t.Fatalf("stream missing table\n%s", got)
+	}
 }

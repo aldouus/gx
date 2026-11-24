@@ -457,14 +457,18 @@ func (t *Transcript) Token(s string) error {
 		return err
 	}
 	for {
-		i := strings.IndexByte(t.live, '\n')
-		if i < 0 || strings.Trim(t.live[i+1:], "\n") == "" {
+		for strings.HasPrefix(t.live, "\n") {
+			t.live = t.live[1:]
+		}
+		block, rest, ok := committable(t.live)
+		if !ok {
 			return nil
 		}
-		line := t.live[:i]
-		t.live = t.live[i+1:]
-		t.screen.Release(len(assistantRows(line, t.cols)))
+		n := len(assistantRows(block, t.cols))
+		t.live = rest
+		t.screen.Release(n)
 	}
+
 }
 
 // FinishText keeps the assistant text in scrollback and drops it from the frame.
@@ -639,7 +643,7 @@ func (t *Transcript) noteActivity() {
 	state, kind, msg := "idle", "", ""
 	switch {
 	case t.ask != nil:
-		state, kind, msg = "blocked", "permission", t.ask.Name+" "+t.ask.Detail
+		state, kind, msg = "blocked", "permission", t.ask.Name+" "+visibleDetail(t.ask.Name, t.ask.Detail)
 	case t.busy:
 		state = "working"
 	case t.result == "error":
@@ -658,7 +662,7 @@ func (t *Transcript) noteActivity() {
 func (t *Transcript) frame() Frame {
 	var rows []string
 	if t.live != "" {
-		rows = append(rows, wrapPlain(indentText(linkPaths(t.live)), t.cols)...)
+		rows = append(rows, assistantRows(t.live, t.cols)...)
 	}
 	rows = append(rows, t.toolTree()...)
 	if t.ask != nil {
@@ -673,17 +677,14 @@ func (t *Transcript) frame() Frame {
 	if t.menu != nil {
 		return t.menuFrame(rows)
 	}
-	inputRow := len(rows)
-	rows = append(rows, t.inputRow())
+	inputAt := len(rows)
+	wrapped, rel, col := t.composerRows()
+	rows = append(rows, wrapped...)
 	rows = append(rows, t.completionRows()...)
 	if len(t.comps) == 0 {
 		rows = append(rows, "", t.hintRow(), "")
 	}
-	col := width.String(composerMark) + width.String(t.input[:t.cursor]) + 1
-	if col < 1 {
-		col = 1
-	}
-	return Frame{Rows: rows, CursorRow: inputRow, CursorCol: col}
+	return Frame{Rows: rows, CursorRow: inputAt + rel, CursorCol: col}
 }
 
 const composerMark = "┃ "
@@ -742,8 +743,8 @@ func formatElapsed(seconds int) string {
 
 func (t *Transcript) permissionFrame(rows []string) Frame {
 	rows = append(rows, bold+"Allow "+t.ask.Name+"?"+reset)
-	if t.ask.Detail != "" {
-		rows = append(rows, dim+"  "+width.Clip(oneLine(t.ask.Detail), t.cols-2)+reset)
+	if detail := visibleDetail(t.ask.Name, t.ask.Detail); detail != "" {
+		rows = append(rows, dim+"  "+width.Clip(detail, t.cols-2)+reset)
 	}
 	labels := t.choiceLabels()
 	choiceRow := len(rows)
@@ -863,22 +864,226 @@ func (t *Transcript) menuFrame(rows []string) Frame {
 	return Frame{Rows: rows, CursorRow: choiceRow + t.menu.sel, CursorCol: 3}
 }
 
-func (t *Transcript) inputRow() string {
-	shown := t.input
+// composerRows wraps the prompt so a long line stays inside the terminal.
+// Later rows use spaces the same width as composerMark.
+func (t *Transcript) composerRows() (rows []string, relRow, col int) {
+	prefixW := width.String(composerMark)
+	if prefixW < 1 {
+		prefixW = 1
+	}
+	// Autowrap is off, so a glyph may end on the last column.
+	room := t.cols - prefixW
+	if room < 1 {
+		room = 1
+	}
+	parts, relRow, contentCol := packComposer(t.composerCells(), room)
+	if len(parts) == 0 {
+		parts = []string{""}
+	}
+	pad := strings.Repeat(" ", prefixW)
+	for i, part := range parts {
+		if i == 0 {
+			rows = append(rows, composerMark+part)
+		} else {
+			rows = append(rows, pad+part)
+		}
+	}
+	col = prefixW + contentCol + 1
+	if col > t.cols {
+		col = t.cols
+	}
+	if col < 1 {
+		col = 1
+	}
+	if relRow < 0 {
+		relRow = 0
+	}
+	if relRow >= len(rows) {
+		relRow = len(rows) - 1
+	}
+	if t.cursor >= len(t.input) && t.caretSpace(t.cursor) && contentCol < room && relRow >= 0 && relRow < len(rows) {
+		rows[relRow] += "\x1b[7m \x1b[0m"
+	}
+	return rows, relRow, col
+}
+
+type composerCell struct {
+	text         string
+	w            int
+	word         bool
+	cursorBefore bool
+	brk          bool
+}
+
+func (t *Transcript) composerCells() []composerCell {
+	raw := t.input
 	cur := t.cursor
-	if cur > len(shown) {
-		cur = len(shown)
+	if cur < 0 {
+		cur = 0
 	}
-	if t.vim && t.vimMode == "insert" {
-		return composerMark + shown
+	if cur > len(raw) {
+		cur = len(raw)
 	}
-	if t.vim && t.vimMode == "visual" {
-		return composerMark + highlightRange(shown, t.anchor, cur)
+	var cells []composerCell
+	for i := 0; i < len(raw); {
+		_, size := utf8.DecodeRuneInString(raw[i:])
+		if size <= 0 {
+			break
+		}
+		text := raw[i : i+size]
+		if text == "\n" {
+			cells = append(cells, composerCell{
+				brk:          true,
+				cursorBefore: i == cur,
+			})
+			i += size
+			continue
+		}
+		cw := width.String(text)
+		if cw < 1 {
+			cw = 1
+		}
+		word := isComposerWord(text)
+		if t.reverseRune(raw, i, cur) {
+			text = "\x1b[7m" + text + "\x1b[0m"
+		}
+		cells = append(cells, composerCell{
+			text:         text,
+			w:            cw,
+			word:         word,
+			cursorBefore: i == cur,
+		})
+		i += size
 	}
-	if t.vim {
-		return composerMark + blockAt(shown, cur)
+	return cells
+}
+
+// caretSpace is the reverse-video block shown where there is no character under
+// the cursor: the normal composer, and vim normal or an empty visual selection
+// at the end of the line. Insert mode uses the terminal cursor instead.
+func (t *Transcript) caretSpace(cur int) bool {
+	if !t.vim {
+		return true
 	}
-	return composerMark + shown[:cur] + "\x1b[7m \x1b[0m" + shown[cur:]
+	if t.vimMode == "insert" || cur < len(t.input) {
+		return false
+	}
+	if t.vimMode == "visual" {
+		a := t.anchor
+		if a < 0 {
+			a = 0
+		}
+		if a < len(t.input) {
+			return false
+		}
+	}
+	return true
+}
+
+func (t *Transcript) reverseRune(raw string, i, cur int) bool {
+	if !t.vim || t.vimMode == "insert" || i >= len(raw) {
+		return false
+	}
+	if t.vimMode != "visual" {
+		return i == cur
+	}
+	a, end := t.anchor, cur
+	if a > end {
+		a, end = end, a
+	}
+	if a < 0 {
+		a = 0
+	}
+	if end < len(raw) {
+		_, size := utf8.DecodeRuneInString(raw[end:])
+		end += size
+	}
+	if end > len(raw) {
+		end = len(raw)
+	}
+	if a > len(raw) {
+		a = len(raw)
+	}
+	if a >= end {
+		return i == cur
+	}
+	return i >= a && i < end
+}
+
+func isComposerWord(text string) bool {
+	r, _ := utf8.DecodeRuneInString(text)
+	if r == utf8.RuneError && text == "" {
+		return false
+	}
+	return r != ' ' && r != '\t' && r != '\n'
+}
+
+func packComposer(cells []composerCell, room int) (lines []string, curRow, curCol int) {
+	if room < 1 {
+		room = 1
+	}
+	var b strings.Builder
+	col := 0
+	row := 0
+	placed := false
+	place := func() {
+		if placed {
+			return
+		}
+		curRow = row
+		curCol = col
+		placed = true
+	}
+	breakRow := func() {
+		lines = append(lines, b.String())
+		b.Reset()
+		row++
+		col = 0
+	}
+	for i, cell := range cells {
+		if cell.brk {
+			if cell.cursorBefore {
+				place()
+			}
+			breakRow()
+			continue
+		}
+		if cell.w > room {
+			cell.w = room
+		}
+		if col > 0 && (col+cell.w > room || composerWordWrap(cells, i, col, room)) {
+			breakRow()
+		}
+		if cell.cursorBefore {
+			place()
+		}
+		b.WriteString(cell.text)
+		col += cell.w
+	}
+	if !placed {
+		place()
+	}
+	if b.Len() > 0 || len(lines) == 0 || curRow >= len(lines) {
+		lines = append(lines, b.String())
+	}
+	return lines, curRow, curCol
+}
+
+func composerWordWrap(cells []composerCell, i, col, room int) bool {
+	if col <= 0 || !cells[i].word {
+		return false
+	}
+	if i > 0 && cells[i-1].word {
+		return false
+	}
+	w := 0
+	for j := i; j < len(cells) && cells[j].word; j++ {
+		w += cells[j].w
+		if w > room {
+			return false
+		}
+	}
+	return w > room-col
 }
 
 func vimLabel(mode string) string {
@@ -1016,13 +1221,340 @@ func tighten(s string) string {
 	return s
 }
 
-func assistantRows(s string, cols int) []string {
-	if s == "" {
-		return []string{""}
+func splitRow(line string) []string {
+	line = strings.TrimSpace(line)
+	if strings.HasPrefix(line, "|") {
+		line = line[1:]
 	}
-	return wrapPlain(indentText(linkPaths(s)), cols)
+	if strings.HasSuffix(line, "|") && !strings.HasSuffix(line, "\\|") {
+		line = line[:len(line)-1]
+	}
+	var cells []string
+	var b strings.Builder
+	code := false
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case '`':
+			code = !code
+			b.WriteByte('`')
+		case '\\':
+			if !code && i+1 < len(line) {
+				b.WriteByte(line[i+1])
+				i++
+				continue
+			}
+			b.WriteByte('\\')
+		case '|':
+			if code {
+				b.WriteByte('|')
+				continue
+			}
+			cells = append(cells, strings.TrimSpace(b.String()))
+			b.Reset()
+		default:
+			b.WriteByte(line[i])
+		}
+	}
+	cells = append(cells, strings.TrimSpace(b.String()))
+	return cells
 }
 
+func renderTable(lines []string, cols int) []string {
+	header := styleCells(splitRow(lines[0]))
+	seps := splitRow(lines[1])
+	var body [][]string
+	for _, line := range lines[2:] {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		body = append(body, styleCells(splitRow(line)))
+	}
+	n := len(header)
+	if len(seps) > n {
+		n = len(seps)
+	}
+	for _, row := range body {
+		if len(row) > n {
+			n = len(row)
+		}
+	}
+	if n == 0 {
+		return wrapPlain(indentText(strings.Join(lines, "\n")), cols)
+	}
+	for len(header) < n {
+		header = append(header, "")
+	}
+	widths := make([]int, n)
+	for i, cell := range header {
+		if w := width.String(cell); w > widths[i] {
+			widths[i] = w
+		}
+	}
+	for _, row := range body {
+		for i := 0; i < n && i < len(row); i++ {
+			if w := width.String(row[i]); w > widths[i] {
+				widths[i] = w
+			}
+		}
+	}
+	for i := range widths {
+		if widths[i] < 1 {
+			widths[i] = 1
+		}
+	}
+	avail := cols - 3
+	if avail < n {
+		avail = n
+	}
+	fitWidths(widths, avail)
+	aligns := make([]int, n)
+	for i := 0; i < n && i < len(seps); i++ {
+		aligns[i] = columnAlign(seps[i])
+	}
+	var out []string
+	out = append(out, tableRow(header, widths, aligns, true)...)
+	out = append(out, tableRule(widths))
+	for _, row := range body {
+		for len(row) < n {
+			row = append(row, "")
+		}
+		out = append(out, tableRow(row, widths, aligns, false)...)
+	}
+	limit := cols - 1
+	if limit < 1 {
+		limit = 1
+	}
+	for i, row := range out {
+		if width.String(row) > limit {
+			out[i] = width.Clip(row, limit)
+		}
+	}
+	return out
+}
+
+func styleCells(cells []string) []string {
+	out := make([]string, len(cells))
+	for i, cell := range cells {
+		out[i] = styleInline(linkPaths(cell))
+	}
+	return out
+}
+
+func columnAlign(cell string) int {
+	cell = strings.TrimSpace(cell)
+	left := strings.HasPrefix(cell, ":")
+	right := strings.HasSuffix(cell, ":")
+	if left && right {
+		return 2
+	}
+	if right {
+		return 1
+	}
+	return 0
+}
+
+func fitWidths(widths []int, budget int) {
+	sep := 0
+	if len(widths) > 1 {
+		sep = 3 * (len(widths) - 1)
+	}
+	if budget < len(widths)+sep {
+		budget = len(widths) + sep
+	}
+	room := budget - sep
+	for sumInts(widths) > room {
+		i := 0
+		for j, w := range widths {
+			if w > widths[i] {
+				i = j
+			}
+		}
+		if widths[i] <= 1 {
+			return
+		}
+		widths[i]--
+	}
+}
+
+func sumInts(xs []int) int {
+	n := 0
+	for _, x := range xs {
+		n += x
+	}
+	return n
+}
+
+func tableRow(cells []string, widths, aligns []int, header bool) []string {
+	wrapped := make([][]string, len(widths))
+	height := 1
+	for i := 0; i < len(widths); i++ {
+		text := ""
+		if i < len(cells) {
+			text = cells[i]
+		}
+		if header {
+			text = bold + text + reset
+		}
+		lines := wrapStyled(text, widths[i])
+		align := 0
+		if !header && i < len(aligns) {
+			align = aligns[i]
+		}
+		for li, line := range lines {
+			lines[li] = padVisible(line, widths[i], align)
+		}
+		if len(lines) > height {
+			height = len(lines)
+		}
+		wrapped[i] = lines
+	}
+	var out []string
+	for h := 0; h < height; h++ {
+		var b strings.Builder
+		b.WriteString("  ")
+		for i := 0; i < len(widths); i++ {
+			if i > 0 {
+				b.WriteString(" \u2502 ")
+			}
+			if h < len(wrapped[i]) {
+				b.WriteString(wrapped[i][h])
+			} else {
+				b.WriteString(strings.Repeat(" ", widths[i]))
+			}
+		}
+		out = append(out, b.String())
+	}
+	return out
+}
+
+func tableRule(widths []int) string {
+	var b strings.Builder
+	b.WriteString("  ")
+	for i, w := range widths {
+		if i > 0 {
+			b.WriteString("\u2500\u253c\u2500")
+		}
+		if w < 1 {
+			w = 1
+		}
+		b.WriteString(strings.Repeat("\u2500", w))
+	}
+	return dim + b.String() + reset
+}
+
+func padVisible(s string, cols, align int) string {
+	gap := cols - width.String(s)
+	if gap < 0 {
+		gap = 0
+	}
+	switch align {
+	case 1:
+		return strings.Repeat(" ", gap) + s
+	case 2:
+		left := gap / 2
+		return strings.Repeat(" ", left) + s + strings.Repeat(" ", gap-left)
+	default:
+		return s + strings.Repeat(" ", gap)
+	}
+}
+
+func wrapStyled(s string, cols int) []string {
+	if cols < 1 {
+		cols = 1
+	}
+	if s == "" || width.String(s) <= cols {
+		if s == "" {
+			return []string{""}
+		}
+		return []string{s}
+	}
+	var lines []string
+	var b strings.Builder
+	open := ""
+	col := 0
+	flush := func() {
+		if open != "" {
+			b.WriteString(reset)
+		}
+		lines = append(lines, b.String())
+		b.Reset()
+		col = 0
+		if open != "" {
+			b.WriteString(open)
+		}
+	}
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b {
+			j := i + 1
+			if j < len(s) && s[j] == '[' {
+				j++
+				for j < len(s) && !(s[j] >= 0x40 && s[j] <= 0x7e) {
+					j++
+				}
+				if j < len(s) {
+					j++
+				}
+			} else if j < len(s) {
+				j++
+			}
+			seq := s[i:j]
+			b.WriteString(seq)
+			if seq == reset {
+				open = ""
+			} else if strings.HasSuffix(seq, "m") {
+				open = seq
+			}
+			i = j
+			continue
+		}
+		_, size := utf8.DecodeRuneInString(s[i:])
+		if size <= 0 {
+			break
+		}
+		cw := width.String(s[i : i+size])
+		if cw < 1 {
+			cw = 1
+		}
+		if col > 0 && col+cw > cols {
+			flush()
+		}
+		b.WriteString(s[i : i+size])
+		col += cw
+		i += size
+	}
+	if b.Len() > 0 || len(lines) == 0 {
+		lines = append(lines, b.String())
+	}
+	return lines
+}
+
+func styleInline(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if strings.HasPrefix(s[i:], "**") || strings.HasPrefix(s[i:], "__") {
+			mark := s[i : i+2]
+			if end := strings.Index(s[i+2:], mark); end >= 0 {
+				b.WriteString(bold)
+				b.WriteString(s[i+2 : i+2+end])
+				b.WriteString(reset)
+				i += end + 4
+				continue
+			}
+		}
+		if s[i] == '`' {
+			if end := strings.IndexByte(s[i+1:], '`'); end >= 0 {
+				b.WriteString(dim)
+				b.WriteString(s[i+1 : i+1+end])
+				b.WriteString(reset)
+				i += end + 2
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
 func indentText(s string) string {
 	if s == "" {
 		return ""
@@ -1056,7 +1588,7 @@ func (t *Transcript) toolTree() []string {
 }
 
 func toolHeadline(tools []ToolLine) string {
-	edits, cmds, reads, searches, fetches, failed := 0, 0, 0, 0, 0, 0
+	edits, cmds, reads, searches, fetches, agents, failed := 0, 0, 0, 0, 0, 0, 0
 	for _, tool := range tools {
 		if toolFailed(tool) {
 			failed++
@@ -1072,6 +1604,8 @@ func toolHeadline(tools []ToolLine) string {
 			searches++
 		case "web_fetch":
 			fetches++
+		case "subagent":
+			agents++
 		}
 	}
 	var parts []string
@@ -1080,13 +1614,14 @@ func toolHeadline(tools []ToolLine) string {
 	parts = append(parts, countPhrase(reads, "read a file", "read files")...)
 	parts = append(parts, countPhrase(searches, "searched", "searched")...)
 	parts = append(parts, countPhrase(fetches, "fetched a page", "fetched pages")...)
+	parts = append(parts, countPhrase(agents, "messaged a subagent", "messaged subagents")...)
 	if len(parts) == 0 {
 		parts = append(parts, "ran "+itoa(len(tools))+" "+plural(len(tools), "tool", "tools"))
 	}
 	parts[0] = strings.ToUpper(parts[0][:1]) + parts[0][1:]
 	head := strings.Join(parts, ", ")
 	if failed > 0 {
-		head += " \u00b7 " + itoa(failed) + " failed"
+		head += " · " + itoa(failed) + " failed"
 	}
 	return head
 }
@@ -1109,22 +1644,157 @@ func plural(n int, one, many string) string {
 }
 
 func toolRow(tool ToolLine) string {
-	if toolFailed(tool) {
-		return "Failed " + width.Clip(oneLine(firstNonEmpty(tool.Output, tool.Detail)), 72)
+	if tool.Name == "shell" {
+		return shellAction(tool)
 	}
+	label := toolAction(tool)
+	if tool.Running || !toolFailed(tool) {
+		return label
+	}
+	row := couldnt(tool)
+	if reason := failureReason(tool.Output); reason != "" {
+		row += " · " + reason
+	}
+	return width.Clip(row, 72)
+}
+
+func toolAction(tool ToolLine) string {
 	switch tool.Name {
 	case "read_file":
 		return "Read " + readLabel(tool.Detail)
 	case "grep_files", "glob_files":
-		return "Searched " + width.Clip(searchTerms(tool.Detail), 72)
+		return "Searched " + width.Clip(searchTerms(tool.Detail), 64)
 	case "web_fetch":
-		return "Fetched " + width.Clip(jsonField(tool.Detail, "url"), 72)
+		url := jsonField(tool.Detail, "url")
+		if url == "" {
+			url = summaryText(tool.Detail)
+		}
+		if url == "" {
+			return "Fetched a page"
+		}
+		return "Fetched " + width.Clip(url, 64)
 	case "shell":
-		return "Ran " + width.Clip(commandText(tool.Detail), 72)
+		return shellAction(tool)
 	case "write_file", "edit_file":
 		return "Edited " + editLabel(tool.Detail)
+	case "subagent":
+		return subagentLabel(tool)
+	case "skill":
+		name := jsonField(tool.Detail, "name")
+		if name == "" {
+			name = summaryText(tool.Detail)
+		}
+		if name == "" {
+			return "Loaded a skill"
+		}
+		return "Loaded " + width.Clip(name, 64)
 	default:
-		return toolVerb(tool.Name) + " " + width.Clip(summaryText(tool.Detail), 72)
+		extra := summaryText(tool.Detail)
+		label := toolVerb(tool.Name)
+		if extra == "" {
+			return label
+		}
+		return width.Clip(label+" "+extra, 72)
+	}
+}
+
+func shellAction(tool ToolLine) string {
+	cmd := commandText(tool.Detail)
+	if cmd == "" {
+		cmd = "a command"
+	}
+	if code, ok := shellExit(tool.Output); ok && code != 0 {
+		if code < 0 {
+			return width.Clip("Timed out "+cmd, 72)
+		}
+		label := "Exited " + itoa(code) + " " + cmd
+		if reason := failureReason(tool.Output); reason != "" {
+			label += " · " + reason
+		}
+		return width.Clip(label, 72)
+	}
+	return "Ran " + width.Clip(cmd, 68)
+}
+
+func couldnt(tool ToolLine) string {
+	switch tool.Name {
+	case "read_file":
+		return "Couldn't read " + readLabel(tool.Detail)
+	case "grep_files", "glob_files":
+		return "Couldn't search " + searchTerms(tool.Detail)
+	case "web_fetch":
+		url := jsonField(tool.Detail, "url")
+		if url == "" {
+			url = "a page"
+		}
+		return "Couldn't fetch " + url
+	case "write_file", "edit_file":
+		return "Couldn't edit " + editLabel(tool.Detail)
+	case "subagent":
+		who := jsonField(tool.Detail, "agent")
+		if who == "" {
+			who = "a subagent"
+		}
+		return "Couldn't message " + who
+	default:
+		return "Couldn't run " + toolVerb(tool.Name)
+	}
+}
+
+func subagentLabel(tool ToolLine) string {
+	action := jsonField(tool.Detail, "action")
+	if action == "" {
+		action = "message"
+	}
+	agent := jsonField(tool.Detail, "agent")
+	switch action {
+	case "wait":
+		if tool.Running {
+			return "waiting for subagents"
+		}
+		return "waited for subagents"
+	case "status":
+		target := agent
+		if target == "" {
+			target = "subagents"
+		}
+		if tool.Running {
+			return "checking " + target
+		}
+		return "checked " + target
+	case "stop":
+		if agent == "" {
+			agent = "a subagent"
+		}
+		if tool.Running {
+			return "stopping " + agent
+		}
+		return "stopped " + agent
+	case "close":
+		if agent == "" {
+			agent = "a subagent"
+		}
+		if tool.Running {
+			return "closing " + agent
+		}
+		return "closed " + agent
+	default:
+		if jsonField(tool.Detail, "to") == "parent" {
+			if tool.Running {
+				return "sending to parent"
+			}
+			return "sent to parent"
+		}
+		if tool.Running {
+			if agent == "" {
+				return "starting a subagent"
+			}
+			return agent + " working"
+		}
+		if agent == "" {
+			return "Messaged a subagent"
+		}
+		return "Messaged " + agent
 	}
 }
 
@@ -1140,6 +1810,8 @@ func toolVerb(name string) string {
 		return "Fetched"
 	case "shell":
 		return "Ran"
+	case "subagent":
+		return "Messaged"
 	default:
 		if name == "" {
 			return "Used"
@@ -1149,11 +1821,126 @@ func toolVerb(name string) string {
 }
 
 func toolFailed(tool ToolLine) bool {
-	if tool.Running || tool.Output == "" {
+	if tool.Running {
 		return false
 	}
-	low := strings.ToLower(tool.Output)
-	return strings.HasPrefix(low, "error") || strings.Contains(low, "failed") || strings.HasPrefix(low, "permission denied")
+	out := strings.TrimSpace(tool.Output)
+	if out == "" {
+		return false
+	}
+	if tool.Name == "shell" {
+		if code, ok := shellExit(out); ok {
+			return code != 0
+		}
+	}
+	if toolDump(out) {
+		return false
+	}
+	low := strings.ToLower(out)
+	if strings.HasPrefix(low, "permission denied") || strings.HasPrefix(low, "unknown tool") {
+		return true
+	}
+	// A file listing is not a failure just because it contains "failed".
+	// "error" and "fail" count only as their own word, so error_code does not.
+	if strings.Contains(out, "\n") {
+		return false
+	}
+	if hasOwnWord(low, "error") || hasOwnWord(low, "fail") || hasOwnWord(low, "failed") || hasOwnWord(low, "failure") {
+		return true
+	}
+	return strings.Contains(low, "not found") || strings.Contains(low, "no such file") || strings.HasPrefix(low, "invalid ")
+}
+
+func hasOwnWord(s, word string) bool {
+	if word == "" {
+		return false
+	}
+	for i := 0; i+len(word) <= len(s); {
+		j := strings.Index(s[i:], word)
+		if j < 0 {
+			return false
+		}
+		j += i
+		left := j == 0 || !wordByte(s[j-1])
+		right := j+len(word) == len(s) || !wordByte(s[j+len(word)])
+		if left && right {
+			return true
+		}
+		i = j + 1
+	}
+	return false
+}
+
+func wordByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+func shellExit(out string) (int, bool) {
+	out = strings.TrimRight(out, "\n")
+	line := out
+	if i := strings.LastIndex(line, "\n"); i >= 0 {
+		line = line[i+1:]
+	}
+	line = strings.TrimSpace(line)
+	const key = "exit_code:"
+	if !strings.HasPrefix(line, key) {
+		return 0, false
+	}
+	rest := strings.TrimSpace(line[len(key):])
+	if strings.HasPrefix(rest, "timeout") {
+		return -1, true
+	}
+	n := 0
+	ok := false
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			break
+		}
+		ok = true
+		n = n*10 + int(r-'0')
+		if n > 999 {
+			break
+		}
+	}
+	return n, ok
+}
+
+func failureReason(out string) string {
+	body := out
+	if i := strings.Index(out, "<stderr>"); i >= 0 {
+		body = out[i+len("<stderr>"):]
+		if j := strings.Index(body, "</stderr>"); j >= 0 {
+			body = body[:j]
+		}
+	} else if toolDump(out) {
+		return ""
+	}
+	body = stripToolTags(body)
+	var line string
+	for _, part := range strings.Split(body, "\n") {
+		part = strings.TrimSpace(part)
+		if part == "" || strings.HasPrefix(part, "exit_code:") {
+			continue
+		}
+		line = part
+		break
+	}
+	line = oneLine(line)
+	if line == "" || toolDump(line) {
+		return ""
+	}
+	return line
+}
+
+func toolDump(s string) bool {
+	return strings.Contains(s, "<content>") || strings.Contains(s, "</content>") || strings.Contains(s, "<stdout>") || strings.Contains(s, "<stderr>") || strings.Contains(s, "<path>")
+}
+
+func stripToolTags(s string) string {
+	for _, tag := range []string{"<stdout>", "</stdout>", "<stderr>", "</stderr>", "<content>", "</content>", "<path>", "</path>"} {
+		s = strings.ReplaceAll(s, tag, "")
+	}
+	return s
 }
 
 func toolSummary(tools []ToolLine, d time.Duration) string {
@@ -1171,12 +1958,19 @@ func toolSummary(tools []ToolLine, d time.Duration) string {
 	if sec < 1 {
 		sec = 1
 	}
-	return what + " \u00b7 " + itoa(sec) + "s"
+	return what + " · " + itoa(sec) + "s"
 }
 
 func commandText(detail string) string {
 	if cmd := jsonField(detail, "command"); cmd != "" {
 		return oneLine(cmd)
+	}
+	if id := jsonField(detail, "session_id"); id != "" {
+		action := jsonField(detail, "action")
+		if action == "" {
+			action = "session"
+		}
+		return action + " " + id
 	}
 	return summaryText(detail)
 }
@@ -1190,12 +1984,39 @@ func editLabel(detail string) string {
 }
 
 func summaryText(detail string) string {
-	if strings.HasPrefix(strings.TrimSpace(detail), "{") {
-		for _, key := range []string{"command", "path", "pattern", "url", "query"} {
+	detail = strings.TrimSpace(detail)
+	if strings.HasPrefix(detail, "{") {
+		for _, key := range []string{"command", "path", "pattern", "url", "query", "name", "agent"} {
 			if value := jsonField(detail, key); value != "" {
 				return oneLine(value)
 			}
 		}
+		return ""
+	}
+	if toolDump(detail) {
+		return ""
+	}
+	return oneLine(detail)
+}
+
+func visibleDetail(name, detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return ""
+	}
+	if name == "subagent" {
+		return subagentLabel(ToolLine{Name: name, Detail: detail, Running: true})
+	}
+	if name == "shell" {
+		if cmd := commandText(detail); cmd != "" {
+			return cmd
+		}
+	}
+	if v := summaryText(detail); v != "" {
+		return v
+	}
+	if strings.HasPrefix(detail, "{") {
+		return name
 	}
 	return oneLine(detail)
 }
@@ -1247,7 +2068,10 @@ func fileLink(label, path string) string {
 func readLabel(detail string) string {
 	path := jsonField(detail, "path")
 	if path == "" {
-		path = oneLine(detail)
+		path = summaryText(detail)
+	}
+	if path == "" {
+		return "a file"
 	}
 	start := jsonField(detail, "start_line")
 	count := jsonField(detail, "line_count")
@@ -1265,7 +2089,13 @@ func searchTerms(detail string) string {
 	if p := jsonField(detail, "pattern"); p != "" {
 		return p
 	}
-	return oneLine(detail)
+	if strings.HasPrefix(strings.TrimSpace(detail), "{") {
+		return "files"
+	}
+	if s := summaryText(detail); s != "" {
+		return s
+	}
+	return "files"
 }
 
 func jsonField(raw, key string) string {
@@ -1281,15 +2111,6 @@ func jsonField(raw, key string) string {
 	default:
 		return ""
 	}
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func wrap(text string, cols int) []string {
